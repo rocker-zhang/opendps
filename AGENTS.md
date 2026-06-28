@@ -55,21 +55,17 @@ must pass this checklist **before** commit:
   internal project names in any committed file.
 - Phrases like "our cluster", "in production at", "deployed at \[org\]",
   "tested on N nodes" imply organizational context — remove or generalize.
-- Lab hardware references in code comments: use the GPU model, not lab names
-  ("B300 SXM6" not "ssh29" or "the control lab").
+- Lab hardware references: use the public GPU model name only, never internal
+  hostnames or lab-specific identifiers.
 
 **Commit messages:**
-- No `Co-Authored-By: Claude` / `Claude-Session:` trailers.
-- No "AI" anywhere in a commit message, PR body, or issue.
+- No AI-tool attribution trailers of any kind.
+- Keep messages concise and technical — no workflow or toolchain commentary.
 
-**AI workflows:**
-- Do not create or commit AI-based CI workflows (e.g. GitHub Actions PR review
-  bots) to public repos without explicit maintainer request.
-
-**Self-check:**
-Before committing docs or comments, grep for: `cluster`, `internal`, `ssh`,
-`jump`, `proxy`, `prod`, `company`, `employer`, `team`, and any company name.
-Fix anything that hits.
+**CI / tooling:**
+- Do not commit files whose primary content is a list of internal identifiers
+  to protect against (e.g. a security scanner config with employer names as
+  patterns). Such files are themselves sensitive and belong in private config.
 
 ---
 
