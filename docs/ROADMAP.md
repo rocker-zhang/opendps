@@ -9,7 +9,7 @@ Achieve functional parity with closed-source NVIDIA DPS across three dimensions:
 | Dimension | Status |
 |---|---|
 | **Phase 1** — PRS brain, oversubscription reclaim demo (sim + B300/GB200 real-hardware) | ✅ Done |
-| **Phase 2** — Rust hot-path: failsafe <1ms, PyO3 sim backend, bench_failsafe | ✅ Done |
+| **Phase 2** — Rust hot-path: sub-ms failsafe *detection*, PyO3 sim backend, bench_failsafe | ✅ Done |
 | **Phase 3** — Close telemetry + control gaps vs closed-source DPS (N8–N14) | ✅ Done |
 
 **Phase 3 gap summary (from agent analysis, 2026-06-28):**
@@ -22,8 +22,14 @@ Achieve functional parity with closed-source NVIDIA DPS across three dimensions:
 | CVXPY optimal-allocation brain (vs EWMA heuristic) | Important | N11 ✅ |
 | Job-awareness (GPU → job mapping via DCGM process info) | Important | N12 ✅ (skeleton) |
 | Production hardening (/healthz, alerting, watchdog, config reload) | Important | N9 ✅ |
-| Per-tenant quota enforcement | Nice | N13 ✅ |
-| Multi-node cluster coordinator | Nice | N14 ✅ |
+| Per-tenant quota enforcement | Nice | N13 ✅ (QuotaAwarePRSBrain + design doc; unit-tested, not in the default demo path) |
+| Multi-node cluster coordinator | Nice | N14 ✅ (skeleton: proportional rebalancer + in-memory/mock store; no live multi-node run) |
+
+> Validation depth varies by milestone. N0–N7 are exercised end-to-end (sim +
+> real GPU node). N10 (Redfish), N12 (job-aware), N13 (quota) and N14
+> (multi-node) are implemented and unit-tested but are **skeletons not wired into
+> the default demo path** — they need a BMC NIC, a real scheduler, or a
+> multi-node cluster to exercise live.
 
 This is a clean-room reimplementation of the ideas behind NVIDIA DPS/DPM/PRS.
 The closest commercial equivalent is [Pebble](https://www.gopebble.com) (closed
@@ -61,9 +67,9 @@ That specific intersection is the project.
 
 | Component | Role |
 |---|---|
-| **Direct-DCGM collector** | Low-latency per-GPU telemetry into the control loop |
+| **Telemetry source** | Per-GPU draws into the control loop — from dcgm-exporter via Prometheus/PromQL, or directly from the NVML actuator (`--telemetry actuator`) on a bare GPU node |
 | **PDN model** | Facility power-distribution topology + capacity as solver constraints |
-| **Standalone controller + brain** | Zero-k8s binary: direct-DCGM → brain (predict→solve→allocate) → push caps; k8s operator wraps the same library later |
+| **Standalone controller + brain** | Zero-k8s process: telemetry → brain (predict→solve→allocate) → push caps; k8s operator wraps the same library later |
 | **Brain v1 (DPM)** | Per-node static cap enforcement |
 | **Brain v2 (PRS)** | EWMA predict + CVXPY solver + proportional/priority allocation + oversubscription reclaim |
 | **opendps-agent** | Node-level NVML/dcgmi cap enforcement + software failsafe (cap-lower-only fast loop). Runs as process OR DaemonSet |
@@ -106,7 +112,7 @@ first complete demo vertical slice at N1 — not at the end.
 | **N4** ✅ | k8s operator + CRDs | kopf operator wrapping same brain library; PowerDomain / PowerPolicy / JobPowerPolicy CRDs | ✅ Reconciles real CRs on a kind cluster (PowerDomain→phase=Active, ConfigMap written, clean delete); RBAC + image-pull + handler-registration bugs fixed |
 | **N5** ✅ | Failsafe hardening + training-transient smoothing | PRS cap-raise rate limiter (lowering stays immediate); failsafe/smoothing params carried by PowerPolicy → ConfigMap `params.json` → controller | ✅ Param change propagates to ConfigMap on cluster; rate limiter bounds cap-raise slope (tests) |
 | **N6** ✅ | Job/policy intake + data contract | JobPowerPolicy → real matched-pod count + boost registry ConfigMap; JobAwarePRSBrain boosts busy GPUs; sim busy-set for driverless demo | ✅ matchedPods reflects a real matching pod on cluster (not hardcoded 0); busy GPU boosted (tests) |
-| **N7** 🎯 ✅ | **FINAL DEMO** | `scripts/demo.sh` acceptance check: sim fleet + brain-agnostic stranded-watts + PRS/DPM toggle + CVXPY optimal + k8s reconcile; `hw_failsafe.sh` for real-GPU DC4 | ✅ demo.sh green on all sim criteria: DPM 3480 W → PRS 536 W (**85% reclaim**); DC4 gated on GPU node |
+| **N7** 🎯 ✅ | **FINAL DEMO** | `scripts/demo.sh` acceptance check: sim fleet + brain-agnostic stranded-watts + PRS/DPM toggle + CVXPY optimal + k8s reconcile; `hw_failsafe.sh` + `--telemetry actuator` for the real-GPU loop | ✅ demo.sh green on all sim criteria: DPM 3480 W → PRS 536 W (**85% reclaim**, sim). Real GPU node validated: NVML cap round-trip, Rust failsafe trip (NVML round-trip ~23 ms), closed-loop PRS reclaim 1100 W→~305 W — see docs/hardware-validation.md |
 
 ---
 
