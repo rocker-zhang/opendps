@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "opendps"
-version = "0.0.1"
+version = "0.1.0"
 description = "Open-source, vendor-neutral datacenter GPU dynamic power-management stack (telemetry, profiling, closed-loop capping)"
 readme = "README.md"
 requires-python = ">=3.10"
