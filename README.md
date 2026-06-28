@@ -78,6 +78,10 @@ kubectl apply -f deploy/k8s/examples/          # PowerDomain + PowerPolicy + Job
 kubectl get powerdomain demo -n opendps -o jsonpath='{.status.phase}'   # -> Active
 ```
 
+> **Note:** the operator writes PowerPolicy brain/failsafe params into the domain
+> ConfigMap (`params.json`); the controller reads them at **(re)start**, so a
+> PowerPolicy edit takes effect on the next controller restart, not mid-run.
+
 ## Components
 
 | Component | Language | Description |

@@ -21,12 +21,6 @@ scrape_configs:
     static_configs:
       - targets: ['opendps-agent-rust:9403']
 
-  - job_name: dcgm-gb200
-    static_configs:
-      - targets: ['host.docker.internal:9410']  # SSH tunnel: host:9410 → remote dcgm-exporter:9400
-        labels:
-          node: gb200
-
   - job_name: ipmi
     scrape_interval: 30s
     scrape_timeout: 25s
@@ -45,9 +39,11 @@ scrape_configs:
       - target_label: __address__
         replacement: ipmi-exporter:9290
 
-  - job_name: node-b300
-    scrape_interval: 15s
-    static_configs:
-      - targets: ['host.docker.internal:9292']  # SSH tunnel: host:9292 → B300 node_exporter:9100
-        labels:
-          node: b300
+  # To scrape a remote GPU node's own dcgm-exporter / node_exporter, add a job
+  # pointing at a reachable address, e.g.:
+  #
+  #   - job_name: gpu-node-1
+  #     static_configs:
+  #       - targets: ['<host>:9400']   # remote dcgm-exporter
+  #         labels:
+  #           node: gpu-node-1
