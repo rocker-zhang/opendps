@@ -17,6 +17,10 @@ spec:
       containers:
         - name: operator
           image: opendps-operator:latest
+          # Image is side-loaded into the cluster (kind load / nerdctl). With the
+          # default ":latest" pull policy of Always, the kubelet would try a
+          # registry pull and fail (ErrImagePull). Use the local image as-is.
+          imagePullPolicy: IfNotPresent
           command: ["python", "-m", "opendps.operator"]
           env:
             - name: OPENDPS_NAMESPACE
@@ -43,7 +47,26 @@ rules:
     verbs: ["update", "patch"]
   - apiGroups: [""]
     resources: ["configmaps"]
-    verbs: ["get", "create", "update", "patch", "delete"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # kopf posts Kubernetes Events for handler progress/errors.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  - apiGroups: ["events.k8s.io"]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  # JobPowerPolicy reconciliation lists pods to count matches (N6).
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  # Defensive: if peering is ever re-enabled, kopf needs Leases.
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # kopf lists CRDs at startup to discover the resources it handles.
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

@@ -4,7 +4,6 @@ import json
 import logging
 import os
 import time
-from pathlib import Path
 
 import kopf
 import kubernetes
@@ -14,6 +13,8 @@ log = logging.getLogger(__name__)
 # Config map name where the controller reads its topology
 CONFIG_MAP_NAME = os.getenv("OPENDPS_CONFIGMAP", "opendps-topology")
 NAMESPACE = os.getenv("OPENDPS_NAMESPACE", "opendps")
+# Config map holding all active JobPowerPolicy boosts (keyed by policy name)
+BOOST_CONFIG_MAP_NAME = os.getenv("OPENDPS_BOOST_CONFIGMAP", "opendps-job-boosts")
 
 
 # ---------------------------------------------------------------------------
@@ -64,15 +65,36 @@ def on_powerpolicy_change(spec, name, namespace, patch, **kwargs):
     brain = spec.get("brain", "prs")
     interval = float(spec.get("intervalSeconds", 5.0))
 
-    # Annotate the corresponding domain ConfigMap with brain selection
+    # N5 — brain/failsafe params. Write these into the domain ConfigMap *data*
+    # (params.json) so a controller that mounts the ConfigMap reads them as a
+    # file. Annotations alone are not visible through a volume mount, so the
+    # propagation path must go through data, not metadata.
+    params = {
+        "brain": brain,
+        "interval_s": interval,
+        "cap_raise_rate_w_per_tick": float(spec.get("capRaiseRateWattsPerTick", 50.0)),
+        "ewma_alpha": float(spec.get("ewmaAlpha", 0.3)),
+    }
+    if "failsafeThresholdWatts" in spec:
+        params["failsafe_threshold_w"] = float(spec["failsafeThresholdWatts"])
+    if "failsafeEmergencyCapWatts" in spec:
+        params["failsafe_emergency_cap_w"] = float(spec["failsafeEmergencyCapWatts"])
+
+    wrote = _write_domain_params(namespace, domain_ref, params)
+
+    # Keep the lightweight annotation too (handy for `kubectl describe`).
     _annotate_domain_configmap(namespace, domain_ref, {
         "opendps.io/brain": brain,
         "opendps.io/interval": str(interval),
     })
 
-    patch.status["active"] = True
+    patch.status["active"] = bool(wrote)
     patch.status["lastDecisionTs"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    log.info("PowerPolicy %s/%s: domain=%s brain=%s", namespace, name, domain_ref, brain)
+    log.info(
+        "PowerPolicy %s/%s: domain=%s brain=%s capRaiseRate=%.0f ewmaAlpha=%.2f (params written=%s)",
+        namespace, name, domain_ref, brain,
+        params["cap_raise_rate_w_per_tick"], params["ewma_alpha"], wrote,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -86,12 +108,29 @@ def on_jobpowerpolicy_change(spec, name, namespace, patch, **kwargs):
     boost_pct = float(spec.get("gpuBoostPct", 15.0))
     priority = spec.get("priorityClass", "normal")
 
+    # Count pods that actually match the selector. This runs inside the operator
+    # pod and only touches the k8s API (pods list) — it must NOT call nvidia-smi,
+    # which is unavailable in the driverless operator container. The GPU↔job
+    # binding is done node-side by the agent's JobTracker; here we only resolve
+    # how many workloads the policy currently applies to.
+    matched = _count_matching_pods(namespace, match_labels)
+
+    # Publish the boost policy to a ConfigMap the controller reads, so a busy
+    # GPU running a matched job gets its cap boosted (consumed by JobAwarePRSBrain).
+    _write_boost_registry(namespace, name, {
+        "matchLabels": match_labels,
+        "gpu_boost_pct": boost_pct,
+        "priority": priority,
+        "matched_pods": matched,
+    })
+
+    active = matched if boost_pct > 0.0 else 0
+    patch.status["matchedPods"] = matched
+    patch.status["activeBoosts"] = active
     log.info(
-        "JobPowerPolicy %s/%s: labels=%s boost=%.0f%% priority=%s",
-        namespace, name, match_labels, boost_pct, priority,
+        "JobPowerPolicy %s/%s: labels=%s boost=%.0f%% priority=%s matchedPods=%d activeBoosts=%d",
+        namespace, name, match_labels, boost_pct, priority, matched, active,
     )
-    patch.status["matchedPods"] = 0
-    patch.status["activeBoosts"] = 0
 
 
 # ---------------------------------------------------------------------------
@@ -116,18 +155,103 @@ def _build_topology(domain_name: str, gpu_indices: list[int], budget_w: float, o
 def _upsert_configmap(namespace: str, domain_name: str, topology: dict) -> None:
     v1 = kubernetes.client.CoreV1Api()
     cm_name = f"{CONFIG_MAP_NAME}-{domain_name}"
-    data = {"topology.json": json.dumps(topology, indent=2)}
-    body = kubernetes.client.V1ConfigMap(
-        metadata=kubernetes.client.V1ObjectMeta(name=cm_name, namespace=namespace),
-        data=data,
-    )
+    topology_json = json.dumps(topology, indent=2)
+    # Merge-patch only the topology.json key so a sibling params.json written by
+    # the PowerPolicy handler is preserved (replace_* would wipe it).
     try:
-        v1.replace_namespaced_config_map(cm_name, namespace, body)
+        v1.patch_namespaced_config_map(
+            cm_name, namespace, {"data": {"topology.json": topology_json}}
+        )
     except kubernetes.client.exceptions.ApiException as e:
         if e.status == 404:
-            v1.create_namespaced_config_map(namespace, body)
+            body = kubernetes.client.V1ConfigMap(
+                metadata=kubernetes.client.V1ObjectMeta(name=cm_name, namespace=namespace),
+                data={"topology.json": topology_json},
+            )
+            _create_cm_tolerant(v1, namespace, body)
         else:
             raise
+
+
+def _create_cm_tolerant(v1, namespace: str, body) -> None:
+    """Create a ConfigMap, tolerating a 409 from a concurrent handler that
+    created it first (the subsequent reconcile will merge-patch the data)."""
+    try:
+        v1.create_namespaced_config_map(namespace, body)
+    except kubernetes.client.exceptions.ApiException as ce:
+        if ce.status != 409:  # 409 = already created concurrently — fine
+            raise
+
+
+def _count_matching_pods(namespace: str, match_labels: dict) -> int:
+    """Count pods in the namespace matching the given label selector.
+
+    In-pod safe: only calls the k8s API (pods list), never nvidia-smi. Returns 0
+    if no labels are given or the API call fails (including transient network
+    errors, so a momentary apiserver blip never crashes the handler).
+    """
+    if not match_labels:
+        return 0
+    selector = ",".join(f"{k}={v}" for k, v in match_labels.items())
+    try:
+        v1 = kubernetes.client.CoreV1Api()
+        pods = v1.list_namespaced_pod(namespace, label_selector=selector)
+        return len(pods.items)
+    except Exception as e:  # ApiException + urllib3 connection errors
+        log.warning("pod list failed for selector %r: %s", selector, e)
+        return 0
+
+
+def _write_boost_registry(namespace: str, policy_name: str, entry: dict) -> None:
+    """Publish one JobPowerPolicy's boost entry into the shared boost-registry
+    ConfigMap (merge-patch on the policy-named key; preserves sibling policies).
+
+    This is the published, k8s-native record of the boost policy (and an audit
+    artifact). The process-mode controller derives live per-GPU boosts from its
+    JobTracker, not from this ConfigMap; a future in-cluster controller would
+    consume it directly.
+    """
+    v1 = kubernetes.client.CoreV1Api()
+    patch_body = {"data": {f"{policy_name}.json": json.dumps(entry, indent=2)}}
+    try:
+        v1.patch_namespaced_config_map(BOOST_CONFIG_MAP_NAME, namespace, patch_body)
+    except kubernetes.client.exceptions.ApiException as e:
+        if e.status == 404:
+            body = kubernetes.client.V1ConfigMap(
+                metadata=kubernetes.client.V1ObjectMeta(
+                    name=BOOST_CONFIG_MAP_NAME, namespace=namespace
+                ),
+                data={f"{policy_name}.json": json.dumps(entry, indent=2)},
+            )
+            _create_cm_tolerant(v1, namespace, body)
+        else:
+            raise
+
+
+def _write_domain_params(namespace: str, domain_name: str, params: dict) -> bool:
+    """Write PowerPolicy-derived brain params into the domain ConfigMap's
+    ``params.json`` data key (merge-patch, preserves topology.json).
+
+    Returns True on success, False if the ConfigMap does not exist yet (the
+    PowerDomain must be reconciled first). Mirrors the controller-side reader in
+    standalone._load_brain_params.
+
+    Raises kopf.TemporaryError on 404 so a PowerPolicy reconciled before its
+    PowerDomain retries (rather than silently dropping the params forever).
+    """
+    v1 = kubernetes.client.CoreV1Api()
+    cm_name = f"{CONFIG_MAP_NAME}-{domain_name}"
+    try:
+        v1.patch_namespaced_config_map(
+            cm_name, namespace, {"data": {"params.json": json.dumps(params, indent=2)}}
+        )
+        return True
+    except kubernetes.client.exceptions.ApiException as e:
+        if e.status == 404:
+            raise kopf.TemporaryError(
+                f"ConfigMap {cm_name} not ready; create PowerDomain first", delay=15
+            ) from e
+        raise
 
 
 def _annotate_domain_configmap(namespace: str, domain_name: str, annotations: dict[str, str]) -> None:

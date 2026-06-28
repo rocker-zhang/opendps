@@ -103,10 +103,10 @@ first complete demo vertical slice at N1 — not at the end.
 | **N1** ⭐ | **First vertical slice** | Direct-DCGM collector + PDN model (simple topology) + sim backend + standalone controller + brain v1 (static DPM) + Grafana panel | **Full loop on sim: telemetry→brain→cap→Grafana** |
 | **N2** | PRS brain + oversubscription reclaim | Brain v2: EWMA→CVXPY solver→proportional/priority alloc + oversub reclaim switch; calibrate sim from real telemetry | PRS on/off toggle, stranded-watts counter drops |
 | **N3** | Real hardware enforcement | opendps-agent: NVML/dcgmi cap + software failsafe; runs as process OR DaemonSet; validated on cap-capable GPU hardware | Same brain loop with real caps |
-| **N4** | k8s operator + CRDs | kubebuilder operator wrapping same brain library; PowerDomain / PowerPolicy / JobPowerPolicy CRDs; local k3s first | Operator reconcile loop on real cluster |
-| **N5** | Failsafe hardening + training-transient smoothing | Dual-time-scale failsafe (brain-independent, cap-lower-only); EasyRider-class transient smoothing | Injected overload trips failsafe |
-| **N6** | Job/policy intake + data contract | Scheduling→brain interface: job boundary, priority, NVLink topology, step rhythm; PowerPolicy plumbed end-to-end | Workload-aware cap allocation |
-| **N7** 🎯 | **FINAL DEMO** | Grafana dashboards + e2e demo script: sim fleet (single-workstation `compose up`) + real GPU node (process-mode agent) + PRS toggle + stranded-watts counter; README + reproducible | **Complete demo** |
+| **N4** ✅ | k8s operator + CRDs | kopf operator wrapping same brain library; PowerDomain / PowerPolicy / JobPowerPolicy CRDs | ✅ Reconciles real CRs on a kind cluster (PowerDomain→phase=Active, ConfigMap written, clean delete); RBAC + image-pull + handler-registration bugs fixed |
+| **N5** ✅ | Failsafe hardening + training-transient smoothing | PRS cap-raise rate limiter (lowering stays immediate); failsafe/smoothing params carried by PowerPolicy → ConfigMap `params.json` → controller | ✅ Param change propagates to ConfigMap on cluster; rate limiter bounds cap-raise slope (tests) |
+| **N6** ✅ | Job/policy intake + data contract | JobPowerPolicy → real matched-pod count + boost registry ConfigMap; JobAwarePRSBrain boosts busy GPUs; sim busy-set for driverless demo | ✅ matchedPods reflects a real matching pod on cluster (not hardcoded 0); busy GPU boosted (tests) |
+| **N7** 🎯 ✅ | **FINAL DEMO** | `scripts/demo.sh` acceptance check: sim fleet + brain-agnostic stranded-watts + PRS/DPM toggle + CVXPY optimal + k8s reconcile; `hw_failsafe.sh` for real-GPU DC4 | ✅ demo.sh green on all sim criteria: DPM 3480 W → PRS 536 W (**85% reclaim**); DC4 gated on GPU node |
 
 ---
 

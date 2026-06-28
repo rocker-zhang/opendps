@@ -37,6 +37,19 @@ class JobTracker:
     def is_gpu_busy(self, gpu_index: int) -> bool:
         return bool(self.get_jobs(gpu_index))
 
+    def set_busy_gpus(self, gpu_indices) -> None:
+        """Manually mark a set of GPUs as busy without polling nvidia-smi.
+
+        Used by sim/demo runs (no GPU driver) and tests to drive
+        JobAwarePRSBrain deterministically. Replaces any polled job state.
+        """
+        with self._lock:
+            self._jobs = {
+                int(i): [GPUJob(pid=-1, gpu_uuid=f"sim-{int(i)}",
+                                gpu_index=int(i), used_memory_mib=1)]
+                for i in gpu_indices
+            }
+
     # ------------------------------------------------------------------ private
     def _refresh_uuid_map(self) -> None:
         try:

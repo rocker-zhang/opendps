@@ -35,6 +35,21 @@ spec:
                 cvxpyTimeoutSeconds:
                   type: number
                   default: 10.0
+                # N5 — failsafe hardening + transient smoothing knobs.
+                capRaiseRateWattsPerTick:
+                  type: number
+                  default: 50.0
+                  description: "Max watts a per-GPU cap may rise per tick (raise-rate limiter; 0 = unlimited)"
+                ewmaAlpha:
+                  type: number
+                  default: 0.3
+                  description: "EWMA smoothing factor for PRS draw tracking (0<a<=1; lower = smoother)"
+                failsafeThresholdWatts:
+                  type: number
+                  description: "Per-GPU draw above which the failsafe trips (omit to disable)"
+                failsafeEmergencyCapWatts:
+                  type: number
+                  description: "Cap applied by the failsafe on trip (W)"
             status:
               type: object
               properties:

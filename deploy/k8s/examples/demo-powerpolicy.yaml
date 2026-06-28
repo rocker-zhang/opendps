@@ -1,0 +1,14 @@
+apiVersion: opendps.io/v1alpha1
+kind: PowerPolicy
+metadata:
+  name: demo-policy
+  namespace: opendps
+spec:
+  domainRef: demo
+  brain: prs
+  intervalSeconds: 3.0
+  # N5 — failsafe hardening + transient smoothing knobs.
+  capRaiseRateWattsPerTick: 50.0
+  ewmaAlpha: 0.5
+  failsafeThresholdWatts: 1050.0
+  failsafeEmergencyCapWatts: 700.0

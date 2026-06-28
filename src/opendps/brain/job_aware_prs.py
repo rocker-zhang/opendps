@@ -21,11 +21,16 @@ class JobAwarePRSBrain:
         self._boost = priority_boost
 
     def decide(self, domain_name: str, state: DomainState) -> BrainDecision:
+        # The priority boost is applied on top of the PRS decision and is
+        # intentionally exempt from the N5 cap-raise rate limiter: a GPU that
+        # just started a prioritised job should get its headroom immediately.
         decision = self._prs.decide(domain_name, state)
         for gpu, cap in list(decision.caps.items()):
             if self._tracker.is_gpu_busy(gpu):
-                boosted = min(cap * (1.0 + self._boost), state.gpu_max_caps[gpu])
-                decision.caps[gpu] = boosted
+                # gpu_max_caps may be empty/partial — fall back to the current
+                # cap so a boost never raises above a known hardware max.
+                hw_max = state.gpu_max_caps.get(gpu, cap)
+                decision.caps[gpu] = min(cap * (1.0 + self._boost), hw_max)
         return decision
 
     def get_last_metrics(self, domain_name: str):

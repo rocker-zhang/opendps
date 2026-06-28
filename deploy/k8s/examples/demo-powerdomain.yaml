@@ -1,0 +1,11 @@
+apiVersion: opendps.io/v1alpha1
+kind: PowerDomain
+metadata:
+  name: demo
+  namespace: opendps
+spec:
+  # 10 GPUs sharing an 8-GPU-equivalent budget (25% oversubscribed) — the
+  # headline N7 demo scenario.
+  gpuIndices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+  budgetWatts: 8000.0
+  nodeOverheadWatts: 600.0
