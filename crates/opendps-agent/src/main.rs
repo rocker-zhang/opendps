@@ -19,9 +19,9 @@ use std::time::Duration;
 use clap::Parser;
 
 use opendps_agent::failsafe::{
-    CapSink, FailsafeConfig, PowerSource, RecordingCapSink, SimPowerSource, spawn_failsafe,
+    spawn_failsafe, CapSink, FailsafeConfig, PowerSource, RecordingCapSink, SimPowerSource,
 };
-use opendps_agent::metrics::{AgentMetrics, serve_metrics};
+use opendps_agent::metrics::{serve_metrics, AgentMetrics};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -101,7 +101,10 @@ async fn main() {
     let source = Arc::new(SimPowerSource::new(n, cli.sim_draw_w));
     let sink = Arc::new(RecordingCapSink::new(n));
 
-    start_failsafe_and_run(cli, m, source, sink.clone(), n, move |gpu| sink.last_cap_w(gpu)).await;
+    start_failsafe_and_run(cli, m, source, sink.clone(), n, move |gpu| {
+        sink.last_cap_w(gpu)
+    })
+    .await;
 }
 
 async fn start_failsafe_and_run<P, C, CapFn>(
@@ -176,7 +179,11 @@ async fn run_nvml_mode(cli: Cli) {
 
     let m = AgentMetrics::new(n);
     serve_metrics(&format!("0.0.0.0:{}", cli.metrics_port), m.clone());
-    tracing::info!(gpus = n, port = cli.metrics_port, "NVML backend ready, metrics started");
+    tracing::info!(
+        gpus = n,
+        port = cli.metrics_port,
+        "NVML backend ready, metrics started"
+    );
 
     let source = backend.clone();
     let sink = backend.clone();

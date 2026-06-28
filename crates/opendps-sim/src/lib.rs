@@ -58,7 +58,8 @@ impl SimGpu {
 
     fn lcg_next(&mut self) -> f64 {
         // LCG: multiplier 6364136223846793005, addend 1442695040888963407
-        self.rng = self.rng
+        self.rng = self
+            .rng
             .wrapping_mul(6_364_136_223_846_793_005)
             .wrapping_add(1_442_695_040_888_963_407);
         // Map to [-1, 1]
@@ -149,7 +150,9 @@ impl RustSimBackend {
     /// sorted in PyO3 (requires `Send` error types).
     fn set_power_cap(&self, gpu_index: usize, watts: f64) -> PyResult<()> {
         let mut s = self.state.lock().unwrap();
-        let gpu = s.gpus.get_mut(gpu_index)
+        let gpu = s
+            .gpus
+            .get_mut(gpu_index)
             .ok_or_else(|| PyIndexError::new_err(format!("GPU index {gpu_index} out of range")))?;
         gpu.cap_w = watts.min(gpu.max_cap_w).max(0.0);
         Ok(())
@@ -158,7 +161,8 @@ impl RustSimBackend {
     /// Return the current power cap for a GPU (W).
     fn get_power_cap(&self, gpu_index: usize) -> PyResult<f64> {
         let s = self.state.lock().unwrap();
-        s.gpus.get(gpu_index)
+        s.gpus
+            .get(gpu_index)
             .map(|g| g.cap_w)
             .ok_or_else(|| PyIndexError::new_err(format!("GPU index {gpu_index} out of range")))
     }
@@ -166,7 +170,8 @@ impl RustSimBackend {
     /// Return the current simulated power draw for a GPU (W).
     fn get_power_draw(&self, gpu_index: usize) -> PyResult<f64> {
         let s = self.state.lock().unwrap();
-        s.gpus.get(gpu_index)
+        s.gpus
+            .get(gpu_index)
             .map(|g| g.power_draw_w())
             .ok_or_else(|| PyIndexError::new_err(format!("GPU index {gpu_index} out of range")))
     }
@@ -174,7 +179,8 @@ impl RustSimBackend {
     /// Return the current utilization percentage for a GPU (0–100).
     fn get_util_pct(&self, gpu_index: usize) -> PyResult<f64> {
         let s = self.state.lock().unwrap();
-        s.gpus.get(gpu_index)
+        s.gpus
+            .get(gpu_index)
             .map(|g| g.util_pct)
             .ok_or_else(|| PyIndexError::new_err(format!("GPU index {gpu_index} out of range")))
     }
@@ -187,7 +193,8 @@ impl RustSimBackend {
     /// Return the hardware maximum cap for a GPU (W).
     fn get_max_cap_w(&self, gpu_index: usize) -> PyResult<f64> {
         let s = self.state.lock().unwrap();
-        s.gpus.get(gpu_index)
+        s.gpus
+            .get(gpu_index)
             .map(|g| g.max_cap_w)
             .ok_or_else(|| PyIndexError::new_err(format!("GPU index {gpu_index} out of range")))
     }
@@ -203,7 +210,9 @@ impl RustSimBackend {
     /// Return a snapshot of all GPUs as a list of (index, cap_w, max_cap_w, power_draw_w, util_pct) tuples.
     fn snapshot(&self) -> Vec<(usize, f64, f64, f64, f64)> {
         let s = self.state.lock().unwrap();
-        s.gpus.iter().enumerate()
+        s.gpus
+            .iter()
+            .enumerate()
             .map(|(i, g)| (i, g.cap_w, g.max_cap_w, g.power_draw_w(), g.util_pct))
             .collect()
     }
@@ -233,7 +242,11 @@ mod tests {
     fn sim_state_creates_hot_idle_split() {
         let state = SimState::new(10, 1000.0, 0.6, 42);
         let hot: Vec<_> = state.gpus.iter().filter(|g| g.target_util > 50.0).collect();
-        let idle: Vec<_> = state.gpus.iter().filter(|g| g.target_util <= 50.0).collect();
+        let idle: Vec<_> = state
+            .gpus
+            .iter()
+            .filter(|g| g.target_util <= 50.0)
+            .collect();
         assert_eq!(hot.len(), 6);
         assert_eq!(idle.len(), 4);
     }

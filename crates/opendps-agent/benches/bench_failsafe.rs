@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
 use opendps_agent::failsafe::{
-    CapSink, FailsafeConfig, PowerSource, RecordingCapSink, SimPowerSource, spawn_failsafe,
+    spawn_failsafe, CapSink, FailsafeConfig, PowerSource, RecordingCapSink, SimPowerSource,
 };
 
 fn bench_failsafe_trip_latency(c: &mut Criterion) {
@@ -83,7 +83,7 @@ fn bench_python_equivalent(c: &mut Criterion) {
         let config = FailsafeConfig {
             emergency_threshold_w: 900.0,
             emergency_cap_w: 800.0,
-            poll_interval: Duration::from_millis(100),  // Python default
+            poll_interval: Duration::from_millis(100), // Python default
         };
         let _handle = spawn_failsafe(source.clone(), sink.clone(), config, |_| {});
 
@@ -106,5 +106,9 @@ fn bench_python_equivalent(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_failsafe_trip_latency, bench_python_equivalent);
+criterion_group!(
+    benches,
+    bench_failsafe_trip_latency,
+    bench_python_equivalent
+);
 criterion_main!(benches);

@@ -35,7 +35,10 @@ pub mod nvml {
                 })
                 .collect::<Result<Vec<_>, nvml_wrapper::error::NvmlError>>()?;
 
-            Ok(Self { _nvml: nvml, devices })
+            Ok(Self {
+                _nvml: nvml,
+                devices,
+            })
         }
 
         pub fn gpu_count(&self) -> usize {
@@ -49,7 +52,6 @@ pub mod nvml {
     unsafe impl Sync for NvmlBackend {}
 
     impl NvmlBackend {
-
         /// Maximum enforced power cap (hardware limit), in watts.
         pub fn max_cap_w(&self, gpu: usize) -> f64 {
             let d = self.devices[gpu].lock().unwrap();

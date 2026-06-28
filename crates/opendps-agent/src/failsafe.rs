@@ -132,7 +132,11 @@ where
         })
         .expect("failed to spawn failsafe thread");
 
-    FailsafeHandle { stop, thread: Some(thread), trip_count }
+    FailsafeHandle {
+        stop,
+        thread: Some(thread),
+        trip_count,
+    }
 }
 
 /// Attempt to set the calling thread to SCHED_FIFO with `priority`.
@@ -140,7 +144,9 @@ where
 #[cfg(target_os = "linux")]
 fn try_sched_fifo(priority: i32) {
     unsafe {
-        let param = libc::sched_param { sched_priority: priority };
+        let param = libc::sched_param {
+            sched_priority: priority,
+        };
         libc::sched_setscheduler(0, libc::SCHED_FIFO, &param);
     }
 }

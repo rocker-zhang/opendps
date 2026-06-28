@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 pub struct LatencyHistogram {
-    buckets: Vec<(u64, AtomicU64)>,  // (upper_bound_us, count)
+    buckets: Vec<(u64, AtomicU64)>, // (upper_bound_us, count)
     sum_us: AtomicU64,
     count: AtomicU64,
 }
@@ -92,9 +92,11 @@ impl AgentMetrics {
 
     pub fn render(&self) -> String {
         let mut out = String::new();
-        out.push_str(&self.failsafe_latency.render_prometheus(
-            "opendps_agent_failsafe_latency_us",
-        ));
+        out.push_str(
+            &self
+                .failsafe_latency
+                .render_prometheus("opendps_agent_failsafe_latency_us"),
+        );
         out.push_str(&format!(
             "# HELP opendps_agent_failsafe_trip_total Cumulative failsafe trips\n\
              # TYPE opendps_agent_failsafe_trip_total counter\n\
@@ -102,7 +104,7 @@ impl AgentMetrics {
             self.failsafe_trips.load(Ordering::Relaxed)
         ));
         let draws = self.power_draws.lock().unwrap();
-        let caps  = self.power_caps.lock().unwrap();
+        let caps = self.power_caps.lock().unwrap();
         for gpu in 0..self.n_gpus {
             out.push_str(&format!(
                 "opendps_agent_power_draw_watts{{gpu=\"{gpu}\"}} {}\n",
