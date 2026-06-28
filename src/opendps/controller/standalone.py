@@ -372,7 +372,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    busy_gpus = [int(x) for x in args.busy_gpus.split(",") if x.strip()]
+    try:
+        busy_gpus = [int(x) for x in args.busy_gpus.split(",") if x.strip()]
+    except ValueError:
+        parser.error("--busy-gpus must be a comma-separated list of GPU indices")
+    if busy_gpus and not args.sim:
+        parser.error("--busy-gpus is a sim/demo-only override; use it with --sim")
 
     with open(args.config) as fh:
         topology = from_dict(json.load(fh))

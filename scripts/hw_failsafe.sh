@@ -20,23 +20,36 @@ cargo bench --bench bench_failsafe 2>&1 | grep -iE "p50|p99|latency|time:|µs|us
 echo
 echo "=== DC4.2: real NVML cap-lower trip ==="
 if command -v nvidia-smi >/dev/null 2>&1; then
-  echo "GPU detected:"; nvidia-smi --query-gpu=index,name,power.limit --format=csv,noheader
+  echo "GPUs detected:"
+  nvidia-smi --query-gpu=index,name,power.draw,power.limit,power.max_limit --format=csv,noheader
   echo "Building agent with NVML..."
   cargo build --release --features nvml
-  echo "Running failsafe with a threshold below idle draw to force a trip."
-  echo "(Set OPENDPS_FAILSAFE_THRESHOLD_W / OPENDPS_FAILSAFE_CAP_W to tune.)"
+
+  # Derive the trip profile from the actual hardware rather than hard-coding one
+  # set of watts for every GPU model: threshold just below the highest current
+  # draw (so even an idle fleet trips), emergency cap = the device min limit.
+  # Override either via OPENDPS_FAILSAFE_THRESHOLD_W / _CAP_W.
+  MAX_DRAW=$(nvidia-smi --query-gpu=power.draw --format=csv,noheader,nounits | sort -n | tail -1)
+  MIN_LIMIT=$(nvidia-smi --query-gpu=power.min_limit --format=csv,noheader,nounits | sort -n | head -1)
+  THRESH="${OPENDPS_FAILSAFE_THRESHOLD_W:-$(awk "BEGIN{printf \"%d\", $MAX_DRAW - 5}")}"
+  CAP="${OPENDPS_FAILSAFE_CAP_W:-$(awk "BEGIN{printf \"%d\", $MIN_LIMIT}")}"
+  PORT="${OPENDPS_METRICS_PORT:-9403}"
+  HOST="${OPENDPS_HOST:-127.0.0.1}"
+  echo "Trip threshold=${THRESH}W (below max idle draw ${MAX_DRAW}W); emergency cap=${CAP}W (min limit ${MIN_LIMIT}W)."
   ./target/release/opendps-agent \
     --nvml \
-    --failsafe-threshold-w "${OPENDPS_FAILSAFE_THRESHOLD_W:-220}" \
-    --failsafe-cap-w "${OPENDPS_FAILSAFE_CAP_W:-200}" \
-    --metrics-port 9403 &
+    --failsafe-threshold-w "$THRESH" \
+    --failsafe-cap-w "$CAP" \
+    --metrics-port "$PORT" &
   AGENT_PID=$!
+  trap 'kill "$AGENT_PID" 2>/dev/null || true' INT TERM EXIT
   sleep 5
   echo "Failsafe metrics:"
-  curl -s localhost:9403/metrics 2>/dev/null | grep -iE "failsafe|trip|latency" | grep -v '^#' || true
+  curl -s "$HOST:$PORT/metrics" 2>/dev/null | grep -iE "failsafe|trip|latency" | grep -v '^#' || true
   kill "$AGENT_PID" 2>/dev/null || true
-  echo "Restore caps with: nvidia-smi -pl <default_watts>"
+  trap - INT TERM EXIT
+  echo "NOTE: the failsafe lowered caps; restore per GPU with 'nvidia-smi -pl <default_watts>'."
 else
   echo "No nvidia-smi on this host — skipping the real cap-lower trip."
-  echo "Run on an A10/B300/GB200 node for the full DC4 check."
+  echo "Run on a cap-capable GPU node for the full DC4 check."
 fi

@@ -40,10 +40,11 @@ scrape_configs:
         replacement: ipmi-exporter:9290
 
   # To scrape a remote GPU node's own dcgm-exporter / node_exporter, add a job
-  # pointing at a reachable address, e.g.:
+  # pointing at a reachable address (e.g. host.docker.internal when tunnelled to
+  # the host, or a service name on the compose network):
   #
   #   - job_name: gpu-node-1
   #     static_configs:
-  #       - targets: ['<host>:9400']   # remote dcgm-exporter
+  #       - targets: ['host.docker.internal:9400']   # remote dcgm-exporter
   #         labels:
   #           node: gpu-node-1

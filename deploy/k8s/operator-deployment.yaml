@@ -59,10 +59,9 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch"]
-  # Defensive: if peering is ever re-enabled, kopf needs Leases.
-  - apiGroups: ["coordination.k8s.io"]
-    resources: ["leases"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # NOTE: no coordination.k8s.io/leases — the operator runs with
+  # settings.peering.standalone = True, so it never creates KopfPeering leases.
+  # Add a leases rule only if peering is re-enabled.
   # kopf lists CRDs at startup to discover the resources it handles.
   - apiGroups: ["apiextensions.k8s.io"]
     resources: ["customresourcedefinitions"]

@@ -158,37 +158,42 @@ def _upsert_configmap(namespace: str, domain_name: str, topology: dict) -> None:
     topology_json = json.dumps(topology, indent=2)
     # Merge-patch only the topology.json key so a sibling params.json written by
     # the PowerPolicy handler is preserved (replace_* would wipe it).
+    _patch_or_create_cm(v1, namespace, cm_name, {"topology.json": topology_json})
+
+
+def _patch_or_create_cm(v1, namespace: str, cm_name: str, data: dict) -> None:
+    """Merge-patch the given data keys into a ConfigMap, creating it if absent.
+
+    Tolerates the create/patch race: if a concurrent handler creates the
+    ConfigMap first (409), re-patch so our data keys still land (a plain
+    tolerated 409 would drop them when the other create used different keys).
+    """
     try:
-        v1.patch_namespaced_config_map(
-            cm_name, namespace, {"data": {"topology.json": topology_json}}
-        )
+        v1.patch_namespaced_config_map(cm_name, namespace, {"data": data})
+        return
     except kubernetes.client.exceptions.ApiException as e:
-        if e.status == 404:
-            body = kubernetes.client.V1ConfigMap(
-                metadata=kubernetes.client.V1ObjectMeta(name=cm_name, namespace=namespace),
-                data={"topology.json": topology_json},
-            )
-            _create_cm_tolerant(v1, namespace, body)
-        else:
+        if e.status != 404:
             raise
-
-
-def _create_cm_tolerant(v1, namespace: str, body) -> None:
-    """Create a ConfigMap, tolerating a 409 from a concurrent handler that
-    created it first (the subsequent reconcile will merge-patch the data)."""
+    body = kubernetes.client.V1ConfigMap(
+        metadata=kubernetes.client.V1ObjectMeta(name=cm_name, namespace=namespace),
+        data=data,
+    )
     try:
         v1.create_namespaced_config_map(namespace, body)
     except kubernetes.client.exceptions.ApiException as ce:
-        if ce.status != 409:  # 409 = already created concurrently — fine
+        if ce.status != 409:  # created concurrently — fall through and patch
             raise
+        v1.patch_namespaced_config_map(cm_name, namespace, {"data": data})
 
 
 def _count_matching_pods(namespace: str, match_labels: dict) -> int:
     """Count pods in the namespace matching the given label selector.
 
     In-pod safe: only calls the k8s API (pods list), never nvidia-smi. Returns 0
-    if no labels are given or the API call fails (including transient network
-    errors, so a momentary apiserver blip never crashes the handler).
+    when no labels are given. Auth/permission failures (401/403) and other
+    non-transient API errors are re-raised so kopf surfaces and retries them
+    rather than silently reporting zero matches; only transient connection
+    blips degrade to 0.
     """
     if not match_labels:
         return 0
@@ -197,8 +202,13 @@ def _count_matching_pods(namespace: str, match_labels: dict) -> int:
         v1 = kubernetes.client.CoreV1Api()
         pods = v1.list_namespaced_pod(namespace, label_selector=selector)
         return len(pods.items)
-    except Exception as e:  # ApiException + urllib3 connection errors
+    except kubernetes.client.exceptions.ApiException as e:
+        if e.status in (401, 403, 404, 422):  # auth/permission/bad-request: surface it
+            raise
         log.warning("pod list failed for selector %r: %s", selector, e)
+        return 0
+    except Exception as e:  # transient connection error — degrade to 0
+        log.warning("pod list connection error for selector %r: %s", selector, e)
         return 0
 
 
@@ -212,20 +222,10 @@ def _write_boost_registry(namespace: str, policy_name: str, entry: dict) -> None
     consume it directly.
     """
     v1 = kubernetes.client.CoreV1Api()
-    patch_body = {"data": {f"{policy_name}.json": json.dumps(entry, indent=2)}}
-    try:
-        v1.patch_namespaced_config_map(BOOST_CONFIG_MAP_NAME, namespace, patch_body)
-    except kubernetes.client.exceptions.ApiException as e:
-        if e.status == 404:
-            body = kubernetes.client.V1ConfigMap(
-                metadata=kubernetes.client.V1ObjectMeta(
-                    name=BOOST_CONFIG_MAP_NAME, namespace=namespace
-                ),
-                data={f"{policy_name}.json": json.dumps(entry, indent=2)},
-            )
-            _create_cm_tolerant(v1, namespace, body)
-        else:
-            raise
+    _patch_or_create_cm(
+        v1, namespace, BOOST_CONFIG_MAP_NAME,
+        {f"{policy_name}.json": json.dumps(entry, indent=2)},
+    )
 
 
 def _write_domain_params(namespace: str, domain_name: str, params: dict) -> bool:

@@ -4,8 +4,9 @@ metadata:
   name: demo
   namespace: opendps
 spec:
-  # 10 GPUs sharing an 8-GPU-equivalent budget (25% oversubscribed) — the
-  # headline N7 demo scenario.
-  gpuIndices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
-  budgetWatts: 8000.0
-  nodeOverheadWatts: 600.0
+  # Illustrative example. A power domain groups GPUs under a shared budget; set
+  # a budget below the sum of per-GPU maxima to demonstrate oversubscription
+  # reclaim. Adjust gpuIndices / budgetWatts to your own domain.
+  gpuIndices: [0, 1, 2, 3]
+  budgetWatts: 3000.0
+  nodeOverheadWatts: 200.0

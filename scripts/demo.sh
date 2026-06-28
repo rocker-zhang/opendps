@@ -12,6 +12,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 CONFIG="deploy/topology-demo.json"
+HOST="${OPENDPS_HOST:-127.0.0.1}"   # scrape target; override for a remote stack
+PROM_PORT="${OPENDPS_PROM_PORT:-9090}"
 PASS=0; FAIL=0
 ts() { date +%s; }
 START=$(ts)
@@ -38,7 +40,7 @@ stranded_for() {
   # Ensure the background controller is killed even on Ctrl+C / early exit.
   trap 'kill "$pid" 2>/dev/null || true' INT TERM EXIT
   sleep 4  # let EWMA / solver converge
-  val=$(curl -s "localhost:$port/metrics" 2>/dev/null \
+  val=$(curl -s "$HOST:$port/metrics" 2>/dev/null \
         | awk '/^opendps_idle_stranded_watts\{/ {print $2}')
   kill "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
@@ -51,14 +53,15 @@ is_num() { [[ "$1" =~ ^[0-9]+(\.[0-9]+)?$ ]]; }
 
 # DC1 — single-workstation stack comes up.
 say "DC1: sim stack reachable"
-if curl -sf localhost:9090/-/healthy >/dev/null 2>&1; then
-  ok "Prometheus healthy on :9090"
+if curl -sf "$HOST:$PROM_PORT/-/healthy" >/dev/null 2>&1; then
+  ok "Prometheus healthy on :$PROM_PORT"
 else
   gate "Prometheus not up (run: docker compose -f deploy/compose.yml up -d)"
 fi
 
-# DC2 — 10 GPUs in an 8-GPU budget: DPM strands power, PRS reclaims it.
-say "DC2: stranded-watts reclaim (10 GPU / 8000 W)"
+# DC2 — an oversubscribed domain (budget < sum of GPU maxima): DPM strands the
+# idle headroom it statically allocates; PRS reclaims it. Scenario is in $CONFIG.
+say "DC2: stranded-watts reclaim (oversubscribed domain)"
 DPM=$(stranded_for dpm 19420)
 PRS=$(stranded_for prs 19421)
 if ! is_num "$DPM" || ! is_num "$PRS"; then
@@ -111,7 +114,11 @@ fi
 say "DC6: CVXPY brain optimal solve"
 CV_LOG="$(mktemp)"
 "${CTL[@]}" --sim --brain cvxpy --config "$CONFIG" --metrics-port 19422 --interval 0.5 >"$CV_LOG" 2>&1 &
-CV_PID=$!; sleep 4; kill "$CV_PID" 2>/dev/null || true; wait "$CV_PID" 2>/dev/null || true
+CV_PID=$!
+trap 'kill "$CV_PID" 2>/dev/null || true' INT TERM EXIT
+sleep 4
+kill "$CV_PID" 2>/dev/null || true; wait "$CV_PID" 2>/dev/null || true
+trap - INT TERM EXIT
 if grep -q "cvxpy:optimal" "$CV_LOG"; then ok "CVXPY reports optimal solve"; else bad "no cvxpy:optimal in solver log"; fi
 
 # DC4 — real GPU failsafe latency (hardware-gated).

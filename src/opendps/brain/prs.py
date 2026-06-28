@@ -155,7 +155,9 @@ class PRSBrain:
         if self._cap_raise_rate > 0.0:
             last = self._last_caps.get(domain_name, {})
             for gpu, target in caps.items():
-                prev = last.get(gpu)
+                # On the first tick for a GPU, seed from its currently-applied
+                # cap so the very first decision is smoothed too (not a free jump).
+                prev = last.get(gpu, state.gpu_caps.get(gpu))
                 if prev is not None and target > prev:
                     caps[gpu] = min(target, prev + self._cap_raise_rate)
         self._last_caps[domain_name] = dict(caps)

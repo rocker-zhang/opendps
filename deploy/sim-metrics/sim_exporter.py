@@ -4,15 +4,26 @@ import time
 
 from prometheus_client import Gauge, start_http_server
 
-# Demo scenario (N7 DC2): 10 GPUs sharing an 8-GPU-equivalent budget. The first
-# HOT_GPUS run hot (650-850 W); the rest idle (120-220 W). The hot/idle split is
-# what lets the PRS reclaim story show up — idle GPUs strand power under static
-# DPM that PRS reallocates to the hot ones. Override via env for other shapes.
-NUM_GPUS = int(os.getenv("SIM_NUM_GPUS", "10"))
-HOT_GPUS = int(os.getenv("SIM_HOT_GPUS", "6"))
-MODEL_NAME = "NVIDIA-SIM-GPU"
-HOSTNAME = "sim-host-0"
-PORT = 9401
+# Synthetic GPU telemetry for the demo. A fraction of the GPUs run hot and the
+# rest idle, so idle headroom shows up as stranded power that PRS can reclaim.
+# Everything is env-driven; defaults are illustrative, not a real topology.
+
+
+def _env_int(name: str, default: int, lo: int, hi: int) -> int:
+    """Parse a bounded positive int from the environment, falling back on the
+    default for missing/invalid/out-of-range values (no import-time crash)."""
+    try:
+        val = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(hi, val))
+
+
+NUM_GPUS = _env_int("SIM_NUM_GPUS", 8, 1, 4096)
+HOT_GPUS = _env_int("SIM_HOT_GPUS", max(1, NUM_GPUS // 2), 0, NUM_GPUS)
+MODEL_NAME = os.getenv("SIM_MODEL_NAME", "SIM-GPU")
+HOSTNAME = os.getenv("SIM_HOSTNAME", "sim-node")
+PORT = int(os.getenv("SIM_PORT", "9401"))
 
 LABELS = ["gpu", "modelName", "hostname"]
 

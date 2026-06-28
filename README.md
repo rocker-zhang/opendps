@@ -68,7 +68,8 @@ cargo build --release -p opendps-agent
 ```bash
 # Build + side-load the operator image, install CRDs, deploy, and reconcile a demo domain.
 docker build -f deploy/operator.Dockerfile -t opendps-operator:latest .
-kind load docker-image opendps-operator:latest        # or: k3s ctr images import
+kind load docker-image opendps-operator:latest
+# k3s alternative: docker save opendps-operator:latest | sudo k3s ctr images import -
 
 kubectl create namespace opendps
 kubectl apply -f deploy/k8s/crds/
