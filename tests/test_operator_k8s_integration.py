@@ -61,9 +61,16 @@ def _apply_demo_powerdomain():
     independent of execution order."""
     _kubectl("apply", "-n", NS, "-f",
              f"{ROOT}/deploy/k8s/examples/demo-powerdomain.yaml")
-    phase = _wait_for(lambda: _kubectl(
-        "get", "powerdomain", "demo", "-n", NS,
-        "-o", "jsonpath={.status.phase}", check=False).stdout.strip() or None)
+    # Poll until the phase is *Active*, not merely the first non-empty phase:
+    # the controller passes through Pending/Reconciling first, so returning on
+    # any non-empty value would assert too early and flake.
+    def _active_phase():
+        p = _kubectl(
+            "get", "powerdomain", "demo", "-n", NS,
+            "-o", "jsonpath={.status.phase}", check=False).stdout.strip()
+        return p if p == "Active" else None
+
+    phase = _wait_for(_active_phase)
     assert phase == "Active", f"expected phase=Active, got {phase!r}"
 
 

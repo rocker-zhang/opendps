@@ -23,7 +23,7 @@ NUM_GPUS = _env_int("SIM_NUM_GPUS", 8, 1, 4096)
 HOT_GPUS = _env_int("SIM_HOT_GPUS", max(1, NUM_GPUS // 2), 0, NUM_GPUS)
 MODEL_NAME = os.getenv("SIM_MODEL_NAME", "SIM-GPU")
 HOSTNAME = os.getenv("SIM_HOSTNAME", "sim-node")
-PORT = int(os.getenv("SIM_PORT", "9401"))
+PORT = _env_int("SIM_PORT", 9401, 1, 65535)
 
 LABELS = ["gpu", "modelName", "hostname"]
 
