@@ -1,0 +1,44 @@
+version: "2"
+
+reviews:
+  profile: assertive
+  request_changes_workflow: true
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - main
+
+  path_instructions:
+    - path: "src/opendps/brain/**"
+      instructions: |
+        - Every new brain algorithm must have corresponding unit tests in tests/
+        - Power values at the Python layer must be in watts (W), never milliwatts (mW)
+        - BrainDecision must include domain, caps, reason, and ts fields
+        - New brains must implement the decide(domain_name, state) -> BrainDecision interface
+
+    - path: "crates/**/*.rs"
+      instructions: |
+        - Every `unsafe` block must have a `// SAFETY:` comment explaining the invariant
+        - Power cap values passed to NVML are in milliwatts; ensure no unit confusion at the FFI boundary
+        - Failsafe loop timing must not regress below P50 = 100µs
+
+    - path: "deploy/**"
+      instructions: |
+        - No hardcoded IP addresses — use service names (docker compose) or host.docker.internal
+        - No credentials with non-empty defaults
+        - Prometheus targets must use named services, not raw IPs
+
+    - path: "**/*.md"
+      instructions: |
+        - No internal infrastructure references (hostnames, VPN addresses, company-specific names)
+        - Hardware model names only (B300 SXM6, GB200, A100) — no SKU suffixes that narrow the supplier
+        - No phrases implying specific organizational scale ("our cluster", "N nodes in production")
+
+  ignore_title_keywords:
+    - "WIP"
+    - "wip"
+    - "draft"
+
+chat:
+  auto_reply: true
