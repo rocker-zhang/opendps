@@ -1,5 +1,9 @@
 # opendps
 
+[![CI](https://github.com/rocker-zhang/opendps/actions/workflows/ci.yml/badge.svg)](https://github.com/rocker-zhang/opendps/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.12%2B-blue)](pyproject.toml)
+
 Open-source reimplementation of a datacenter GPU dynamic power management stack.
 
 ## What is this?
@@ -43,6 +47,10 @@ dcgm-exporter -> Prometheus -> Grafana (telemetry visualization)
 pip install -e ".[dev]"
 opendps-controller --sim --config examples/topology-10gpu.json --brain prs --metrics-port 9402
 
+# CVXPY optimizer brain (LP-based optimal allocation)
+pip install -e ".[dev,cvxpy]"
+opendps-controller --sim --config examples/topology-10gpu.json --brain cvxpy --metrics-port 9402
+
 # Full stack (requires NVIDIA GPU + Docker)
 cd deploy && docker compose up
 
@@ -55,7 +63,7 @@ cargo build --release -p opendps-agent
 
 | Component | Language | Description |
 |---|---|---|
-| `src/opendps/brain/` | Python | DPM, PRS, CVXPY brains |
+| `src/opendps/brain/` | Python | DPM, PRS, CVXPY, QuotaAwarePRS brains |
 | `src/opendps/controller/` | Python | Standalone control loop |
 | `src/opendps/pdn/` | Python | PDN topology model |
 | `src/opendps/telemetry/` | Python | Prometheus client, metrics, Redfish |
@@ -69,7 +77,7 @@ cargo build --release -p opendps-agent
 |---|---|
 | Phase 1 -- PRS brain, oversubscription reclaim demo | Done |
 | Phase 2 -- Rust hot-path: failsafe <1ms, PyO3 sim, bench | Done |
-| Phase 3 -- Chassis power (IPMI/Redfish), CVXPY brain, job-awareness | In progress |
+| Phase 3 -- Chassis power (IPMI/Redfish), CVXPY brain, job-awareness, quota, multi-node coordinator | Done |
 
 See [ROADMAP.md](docs/ROADMAP.md) for full milestone details.
 
@@ -81,6 +89,10 @@ See [ROADMAP.md](docs/ROADMAP.md) for full milestone details.
 | A10 / A100 | Yes | Yes | NVML `-pl` path |
 | B300 SXM6 AC | Yes | Yes | Up to ~1100W |
 | GB200 | Yes | Yes | Up to ~1200W |
+
+## Contributing
+
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on pull requests, commit style, and the milestone review process.
 
 ## License
 

@@ -35,6 +35,51 @@ class InMemoryStore:
             return list(self._states.values())
 
 
+class RedisStore:
+    """
+    Production NodeStateStore backed by Redis.
+
+    Each node publishes its state as a JSON string under key
+    `opendps:node:{node_id}` with a TTL of 3 × publish_interval.
+    get_all() scans for all `opendps:node:*` keys.
+
+    Requires: pip install redis
+    """
+    _PREFIX = "opendps:node:"
+
+    def __init__(self, redis_url: str = "redis://localhost:6379", ttl_s: int = 30):
+        self._url = redis_url
+        self._ttl = ttl_s
+        self._client = None
+
+    def _get_client(self):
+        if self._client is None:
+            try:
+                import redis as redis_lib
+                self._client = redis_lib.Redis.from_url(self._url, decode_responses=True)
+            except ImportError as e:
+                raise ImportError("pip install redis to use RedisStore") from e
+        return self._client
+
+    def publish(self, state: NodeState) -> None:
+        import json, dataclasses
+        key = f"{self._PREFIX}{state.node_id}"
+        data = json.dumps(dataclasses.asdict(state))
+        self._get_client().setex(key, self._ttl, data)
+
+    def get_all(self) -> list[NodeState]:
+        import json
+        client = self._get_client()
+        keys = client.keys(f"{self._PREFIX}*")
+        states = []
+        for key in keys:
+            raw = client.get(key)
+            if raw:
+                d = json.loads(raw)
+                states.append(NodeState(**d))
+        return states
+
+
 class ClusterCoordinator:
     """
     Redistributes cluster-wide power budget across nodes based on draw.

@@ -10,20 +10,20 @@ Achieve functional parity with closed-source NVIDIA DPS across three dimensions:
 |---|---|
 | **Phase 1** — PRS brain, oversubscription reclaim demo (sim + B300/GB200 real-hardware) | ✅ Done |
 | **Phase 2** — Rust hot-path: failsafe <1ms, PyO3 sim backend, bench_failsafe | ✅ Done |
-| **Phase 3** — Close telemetry + control gaps vs closed-source DPS (N8–N12) | 🔄 In progress |
+| **Phase 3** — Close telemetry + control gaps vs closed-source DPS (N8–N14) | ✅ Done |
 
 **Phase 3 gap summary (from agent analysis, 2026-06-28):**
 
 | Gap | Severity | Target milestone |
 |---|---|---|
-| Chassis/node power (IPMI `dcmi power reading`) | Critical — budget off 15-20% | N9 |
-| NVSwitch + CPU overhead in PDN model | Critical | N9 |
-| Redfish client (NVLink Switch chassis, PDU rails) | Important | N10 |
-| CVXPY optimal-allocation brain (vs EWMA heuristic) | Important | N11 |
-| Job-awareness (GPU → job mapping via DCGM process info) | Important | N12 |
-| Production hardening (/healthz, alerting, watchdog, config reload) | Important | N9 |
-| Per-tenant quota enforcement | Nice | N13 |
-| Multi-node cluster coordinator | Nice | N14 |
+| Chassis/node power (IPMI `dcmi power reading`) | Critical — budget off 15-20% | N9 ✅ (RAPL on B300, IPMI config) |
+| NVSwitch + CPU overhead in PDN model | Critical | N9 ✅ |
+| Redfish client (NVLink Switch chassis, PDU rails) | Important | N10 ✅ (skeleton — needs BMC NIC) |
+| CVXPY optimal-allocation brain (vs EWMA heuristic) | Important | N11 ✅ |
+| Job-awareness (GPU → job mapping via DCGM process info) | Important | N12 ✅ (skeleton) |
+| Production hardening (/healthz, alerting, watchdog, config reload) | Important | N9 ✅ |
+| Per-tenant quota enforcement | Nice | N13 ✅ |
+| Multi-node cluster coordinator | Nice | N14 ✅ |
 
 This is a clean-room reimplementation of the ideas behind NVIDIA DPS/DPM/PRS.
 The closest commercial equivalent is [Pebble](https://www.gopebble.com) (closed
@@ -170,7 +170,7 @@ Phase 2 follows the same process as Phase 1: agent team analysis → adversarial
 
 Phase 2 planning launches in parallel with Phase 1 N1+ build.
 
-_Last updated: 2026-06-27_
+_Last updated: 2026-06-28_
 
 ### Phase 2 locked milestones
 
@@ -248,9 +248,15 @@ _Phase 2 plan locked: 2026-06-27_
 
 ## N14 — Multi-node cluster coordinator
 
-**Status**: Skeleton implemented
+**Status**: Redis adapter + IPC bridge implemented
 
 **Deliverables**:
 - `src/opendps/controller/cluster_coordinator.py` — proportional budget rebalancer
-- `InMemoryStore` for testing; Redis adapter for production
+- `InMemoryStore` for testing; `RedisStore` for production (mock-tested, no live Redis required for CI)
 - `ClusterCoordinator.rebalance()` redistributes based on node draw
+- `src/opendps/controller/agent_bridge.py` — controller→agent IPC skeleton (newline-delimited JSON over TCP; falls back to no-op if agent unreachable)
+- Redis mock tests: `test_redis_store_publish_and_get_all`, `test_redis_store_publish_sets_ttl`
+- Agent bridge tests: `test_push_caps_returns_false_when_unreachable`, `test_push_caps_sends_json_messages`
+
+**Full Redis integration**: `pip install ".[redis]"` + running Redis instance required for live use.
+**Agent IPC**: `AgentBridge` connects to Rust opendps-agent on `127.0.0.1:9500` (future N4+ work).

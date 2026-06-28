@@ -21,6 +21,7 @@ cvxpy = ["cvxpy>=1.4"]
 dashboard = ["fastapi>=0.110", "uvicorn>=0.27"]
 dev = ["pytest>=8.0", "ruff>=0.4", "mypy>=1.8"]
 prometheus = ["prometheus-client>=0.20"]
+redis = ["redis>=5.0"]
 
 [project.scripts]
 opendps-controller = "opendps.controller.standalone:main"

@@ -1,0 +1,93 @@
+name: AI Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    branches: [main]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  review:
+    name: Claude review
+    runs-on: ubuntu-latest
+    if: github.actor != 'dependabot[bot]'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get PR diff
+        id: diff
+        run: |
+          git diff origin/${{ github.base_ref }}...HEAD > /tmp/pr.diff
+          echo "lines=$(wc -l < /tmp/pr.diff)" >> $GITHUB_OUTPUT
+
+      - name: Claude review
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          pip install anthropic -q
+
+          python3 - << 'PYEOF'
+          import anthropic, os, sys, textwrap
+
+          diff = open("/tmp/pr.diff").read()
+          if not diff.strip():
+              print("Empty diff, skipping review")
+              sys.exit(0)
+
+          # Truncate very large diffs
+          if len(diff) > 80000:
+              diff = diff[:80000] + "\n\n... [diff truncated] ..."
+
+          client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+
+          prompt = textwrap.dedent(f"""
+          You are reviewing a pull request for **opendps** — an open-source datacenter GPU
+          dynamic power management stack (Python brain + Rust agent + Prometheus/Grafana).
+
+          Key invariants to check:
+          - No internal infrastructure addresses (IPs, hostnames, SSH keys) in any file
+          - No credentials or secrets
+          - Tests must exist for new brain algorithms
+          - Rust unsafe blocks must have safety comments
+          - Power caps must be in watts (not milliwatts) at the Python layer
+          - No Notion URLs in public-facing docs
+
+          PR diff:
+          ```diff
+          {diff}
+          ```
+
+          Provide a concise review covering:
+          1. **Security** — any secrets, internal infra, or sensitive data
+          2. **Correctness** — power unit bugs, off-by-one errors, wrong thresholds
+          3. **Tests** — missing test coverage for new behavior
+          4. **Style** — anything that violates the project conventions above
+
+          End with: `**Verdict**: APPROVE / REQUEST_CHANGES / COMMENT` and one-line reason.
+          Keep the full review under 400 words.
+          """).strip()
+
+          response = client.messages.create(
+              model="claude-sonnet-4-6",
+              max_tokens=1024,
+              messages=[{"role": "user", "content": prompt}],
+          )
+          review_body = response.content[0].text
+
+          import subprocess, json
+          body = f"## Claude AI Code Review\n\n{review_body}\n\n---\n*Reviewed by [claude-sonnet-4-6](https://www.anthropic.com/claude) · [opendps CI](https://github.com/{os.environ['REPO']})*"
+          subprocess.run([
+              "gh", "pr", "comment", os.environ["PR_NUMBER"],
+              "--repo", os.environ["REPO"],
+              "--body", body,
+          ], check=True)
+          print("Review posted.")
+          PYEOF

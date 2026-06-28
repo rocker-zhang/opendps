@@ -94,6 +94,23 @@ class StandaloneController:
             tracker = JobTracker()
             tracker.start()
             self._brain: Any = JobAwarePRSBrain(config.topology, tracker)
+        elif config.brain_type == "quota-prs":
+            from opendps.brain.quota_prs import QuotaAwarePRSBrain
+            from opendps.pdn.quota import QuotaConfig, TenantQuota
+            from typing import Any
+            # Default: two tenants splitting GPUs 60/40 (override via config file in production)
+            n = len(list(config.topology.domains.values())[0].gpu_indices)
+            half = n // 2
+            quota = QuotaConfig(
+                domain_name=list(config.topology.domains.keys())[0],
+                tenants=[
+                    TenantQuota("teamA", list(config.topology.domains.keys())[0],
+                                list(range(half)), max_watts_pct=0.6),
+                    TenantQuota("teamB", list(config.topology.domains.keys())[0],
+                                list(range(half, n)), max_watts_pct=0.4),
+                ],
+            )
+            self._brain: Any = QuotaAwarePRSBrain(config.topology, quota)
         else:
             self._brain = DPMBrain(config.topology)
         # Only create a PromClient when we will actually use it.
@@ -280,9 +297,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--brain",
-        choices=["dpm", "prs", "cvxpy", "job-prs"],
+        choices=["dpm", "prs", "cvxpy", "job-prs", "quota-prs"],
         default="prs",
-        help="Brain algorithm: dpm = static proportional (v1), prs = EWMA reclaim (v2, default), cvxpy = LP solver (v3)",
+        help="Brain algorithm: dpm = static proportional (v1), prs = EWMA reclaim (v2, default), cvxpy = LP solver (v3), quota-prs = per-tenant quota enforcement (N13)",
     )
     parser.add_argument(
         "--metrics-port",

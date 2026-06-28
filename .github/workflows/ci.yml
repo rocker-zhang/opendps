@@ -2,31 +2,49 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "release/*"]
   pull_request:
     branches: [main]
 
 jobs:
-  test:
+  python:
+    name: Python tests
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.10", "3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "${{ matrix.python-version }}"
+          python-version: "3.12"
+          cache: pip
       - name: Install
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev,sim,cvxpy]" -q
       - name: Lint
         run: ruff check src/ tests/
       - name: Test
-        run: pytest tests/ -v
+        run: pytest tests/ -x -q --tb=short
 
-  compose-validate:
+  rust:
+    name: Rust tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Validate compose file
-        run: docker compose -f deploy/compose.yml config --quiet
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo clippy --workspace -- -D warnings
+      - name: test
+        run: cargo test --workspace
+
+  docker:
+    name: Docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build controller image
+        run: docker build -f deploy/controller.Dockerfile -t opendps-controller:ci .
+      - name: Build agent image
+        run: docker build -f deploy/agent-rust.Dockerfile -t opendps-agent-rust:ci .
