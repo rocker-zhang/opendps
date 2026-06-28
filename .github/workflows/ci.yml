@@ -33,7 +33,7 @@ jobs:
         run: |
           python -m venv .venv
           . .venv/bin/activate
-          pip install -e ".[dev,sim,cvxpy]" -q
+          pip install -e ".[dev,sim,cvxpy,operator]" -q
       - name: Lint
         run: . .venv/bin/activate && ruff check src/ tests/
       - name: Test

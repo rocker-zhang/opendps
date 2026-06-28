@@ -16,15 +16,13 @@
 ///
 /// View HTML report at:
 ///   target/criterion/failsafe_trip_latency/report/index.html
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
-use opendps_agent::failsafe::{
-    spawn_failsafe, CapSink, FailsafeConfig, PowerSource, RecordingCapSink, SimPowerSource,
-};
+use opendps_agent::failsafe::{spawn_failsafe, FailsafeConfig, RecordingCapSink, SimPowerSource};
 
 fn bench_failsafe_trip_latency(c: &mut Criterion) {
     let mut group = c.benchmark_group("failsafe_trip_latency");
