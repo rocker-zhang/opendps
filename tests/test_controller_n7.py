@@ -91,5 +91,14 @@ def test_telemetry_actuator_reads_draws_without_prometheus():
     )
     ctl = StandaloneController(cfg)
     assert ctl._client is None, "no PromClient should be created for --telemetry actuator"
+
+    # Caps before the tick (hardware max in the oversub scenario).
+    before = {g: cfg.actuator.get_power_cap(g) for g in range(10)}
     decisions = ctl.run_once()
     assert decisions and decisions[0].caps, "controller should produce caps from actuator draws"
+
+    # The decision must actually be written through to the actuator (not dry_run):
+    # PRS lowers idle GPUs, so at least one cap on the actuator must have dropped.
+    after = {g: cfg.actuator.get_power_cap(g) for g in range(10)}
+    assert any(after[g] < before[g] for g in range(10)), \
+        "PRS caps should be pushed to the actuator (some idle GPU cap lowered)"

@@ -30,7 +30,7 @@ call.
 
 `NvmlActuator.set_power_cap()` / read-back:
 
-```
+```text
 set 900 W -> read back 900 W
 set 700 W -> read back 700 W
 set 1100 W -> read back 1100 W   (restored)
@@ -43,7 +43,7 @@ Exact round-trip on real hardware via `pynvml`.
 The controller can read draws straight from the NVML actuator (no Prometheus)
 with `--telemetry actuator`, so the full loop runs on a bare GPU node:
 
-```
+```bash
 opendps-controller --actuator nvml --telemetry actuator --brain prs \
   --config <domain.json> --interval 1
 ```
