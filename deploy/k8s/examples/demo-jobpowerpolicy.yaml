@@ -1,0 +1,10 @@
+apiVersion: opendps.io/v1alpha1
+kind: JobPowerPolicy
+metadata:
+  name: demo-training-boost
+  namespace: opendps
+spec:
+  matchLabels:
+    opendps.io/workload: training
+  gpuBoostPct: 20.0
+  priorityClass: high

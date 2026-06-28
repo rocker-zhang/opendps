@@ -55,3 +55,4 @@ deploy/*-local.yml
 
 # Claude Code developer config (machine-local, never publish)
 .claude/
+.serena/

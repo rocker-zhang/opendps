@@ -43,21 +43,45 @@ dcgm-exporter -> Prometheus -> Grafana (telemetry visualization)
 ## Quick start
 
 ```bash
+# One-shot demo / acceptance check (no GPU required):
+# brings up the sim, asserts PRS reclaims the stranded watts DPM wastes,
+# and checks the k8s operator reconcile if a cluster is present.
+pip install -e ".[dev,sim,cvxpy]"
+./scripts/demo.sh
+
 # Python brain + sim (no GPU required)
-pip install -e ".[dev]"
-opendps-controller --sim --config examples/topology-10gpu.json --brain prs --metrics-port 9402
+opendps-controller --sim --config deploy/topology-demo.json --brain prs --metrics-port 9402
 
 # CVXPY optimizer brain (LP-based optimal allocation)
-pip install -e ".[dev,cvxpy]"
-opendps-controller --sim --config examples/topology-10gpu.json --brain cvxpy --metrics-port 9402
+opendps-controller --sim --config deploy/topology-demo.json --brain cvxpy --metrics-port 9402
 
-# Full stack (requires NVIDIA GPU + Docker)
+# Full stack (Prometheus + Grafana + controller + sim)
 cd deploy && docker compose up
 
 # Rust agent (requires NVML)
 cargo build --release -p opendps-agent
 ./target/release/opendps-agent --nvml --metrics-port 9403
 ```
+
+### Kubernetes operator (kind / k3s)
+
+```bash
+# Build + side-load the operator image, install CRDs, deploy, and reconcile a demo domain.
+docker build -f deploy/operator.Dockerfile -t opendps-operator:latest .
+kind load docker-image opendps-operator:latest
+# k3s alternative: docker save opendps-operator:latest | sudo k3s ctr images import -
+
+kubectl create namespace opendps
+kubectl apply -f deploy/k8s/crds/
+kubectl apply -f deploy/k8s/operator-deployment.yaml
+kubectl apply -f deploy/k8s/examples/          # PowerDomain + PowerPolicy + JobPowerPolicy
+
+kubectl get powerdomain demo -n opendps -o jsonpath='{.status.phase}'   # -> Active
+```
+
+> **Note:** the operator writes PowerPolicy brain/failsafe params into the domain
+> ConfigMap (`params.json`); the controller reads them at **(re)start**, so a
+> PowerPolicy edit takes effect on the next controller restart, not mid-run.
 
 ## Components
 

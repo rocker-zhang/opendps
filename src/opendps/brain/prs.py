@@ -54,6 +54,7 @@ class PRSBrain:
         ewma_alpha: float = 0.3,
         reclaim_threshold: float = 0.6,
         idle_floor_margin: float = 0.3,
+        cap_raise_rate_w_per_tick: float = 0.0,
     ) -> None:
         """
         Parameters
@@ -66,14 +67,26 @@ class PRSBrain:
             GPU is classified as idle if ewma_draw / cap < threshold.
         idle_floor_margin:
             Idle GPU cap = ewma × (1 + margin).  Provides a draw-spike buffer.
+        cap_raise_rate_w_per_tick:
+            N5 transient smoothing.  Maximum watts a single GPU's cap may *rise*
+            per tick.  Cap *lowering* is never rate-limited (safety: shedding
+            power must be immediate, same principle as the cap-lower-only
+            failsafe).  ``0.0`` disables the limiter (unbounded raises).
         """
+        if not 0.0 < ewma_alpha <= 1.0:
+            raise ValueError(f"ewma_alpha must be in (0, 1], got {ewma_alpha}")
+        if cap_raise_rate_w_per_tick < 0.0:
+            raise ValueError("cap_raise_rate_w_per_tick must be >= 0")
         self._topology = topology
         self._min_cap_w = min_cap_w
         self._alpha = ewma_alpha
         self._threshold = reclaim_threshold
         self._margin = idle_floor_margin
+        self._cap_raise_rate = cap_raise_rate_w_per_tick
         # domain_name → {gpu_index: ewma_watts}
         self._ewma: dict[str, dict[int, float]] = {}
+        # domain_name → {gpu_index: last_applied_cap_w} (for the raise limiter)
+        self._last_caps: dict[str, dict[int, float]] = {}
         # Last per-domain diagnostics (set by decide, read by get_last_metrics)
         self._last_metrics: dict[str, PRSMetrics] = {}
 
@@ -136,9 +149,22 @@ class PRSBrain:
 
         caps = {**idle_caps, **hot_caps}
 
-        # 5. Compute metrics
+        # 4b. N5 transient smoothing — rate-limit cap *raises* (lowering is
+        #     always immediate). Prevents a GPU's allowance from jumping in one
+        #     tick, which would let draw spike faster than the PDN can absorb.
+        if self._cap_raise_rate > 0.0:
+            last = self._last_caps.get(domain_name, {})
+            for gpu, target in caps.items():
+                # On the first tick for a GPU, seed from its currently-applied
+                # cap so the very first decision is smoothed too (not a free jump).
+                prev = last.get(gpu, state.gpu_caps.get(gpu))
+                if prev is not None and target > prev:
+                    caps[gpu] = min(target, prev + self._cap_raise_rate)
+        self._last_caps[domain_name] = dict(caps)
+
+        # 5. Compute metrics (on the actually-applied, rate-limited caps)
         idle_stranded = sum(
-            idle_caps[g] - state.gpu_draws.get(g, 0.0) for g in idle
+            caps[g] - state.gpu_draws.get(g, 0.0) for g in idle
         )
         domain_draw = sum(state.gpu_draws.values())
         domain_cap = sum(caps.values())
@@ -167,7 +193,9 @@ class PRSBrain:
         """Clear EWMA state (useful for tests or warm-restart)."""
         if domain_name is None:
             self._ewma.clear()
+            self._last_caps.clear()
             self._last_metrics.clear()
         else:
             self._ewma.pop(domain_name, None)
+            self._last_caps.pop(domain_name, None)
             self._last_metrics.pop(domain_name, None)

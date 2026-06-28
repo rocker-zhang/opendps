@@ -144,14 +144,16 @@ fn dispatch<B: IpcBackend>(cmd: &Value, backend: &Arc<Mutex<B>>) -> Option<Strin
         }
         "get_draws" => {
             let n = b.gpu_count();
-            let draws: serde_json::Map<String, Value> =
-                (0..n).map(|i| (i.to_string(), json!(b.get_draw(i)))).collect();
+            let draws: serde_json::Map<String, Value> = (0..n)
+                .map(|i| (i.to_string(), json!(b.get_draw(i))))
+                .collect();
             Some(json!({"draws": draws}).to_string())
         }
         "get_caps" => {
             let n = b.gpu_count();
-            let caps: serde_json::Map<String, Value> =
-                (0..n).map(|i| (i.to_string(), json!(b.get_cap(i)))).collect();
+            let caps: serde_json::Map<String, Value> = (0..n)
+                .map(|i| (i.to_string(), json!(b.get_cap(i))))
+                .collect();
             Some(json!({"caps": caps}).to_string())
         }
         unknown => {

@@ -1,0 +1,12 @@
+apiVersion: opendps.io/v1alpha1
+kind: PowerDomain
+metadata:
+  name: demo
+  namespace: opendps
+spec:
+  # Illustrative example. A power domain groups GPUs under a shared budget; set
+  # a budget below the sum of per-GPU maxima to demonstrate oversubscription
+  # reclaim. Adjust gpuIndices / budgetWatts to your own domain.
+  gpuIndices: [0, 1, 2, 3]
+  budgetWatts: 3000.0
+  nodeOverheadWatts: 200.0

@@ -30,11 +30,14 @@ jobs:
           python-version: "3.12"
           cache: pip
       - name: Install
-        run: pip install -e ".[dev,sim,cvxpy]" -q
+        run: |
+          python -m venv .venv
+          . .venv/bin/activate
+          pip install -e ".[dev,sim,cvxpy,operator]" -q
       - name: Lint
-        run: ruff check src/ tests/
+        run: . .venv/bin/activate && ruff check src/ tests/
       - name: Test
-        run: pytest tests/ -x -q --tb=short
+        run: . .venv/bin/activate && pytest tests/ -x -q --tb=short
 
   rust:
     needs: security
