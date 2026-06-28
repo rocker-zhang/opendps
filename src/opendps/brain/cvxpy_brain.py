@@ -1,6 +1,6 @@
 from __future__ import annotations
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from opendps.brain.dpm import BrainDecision, DomainState
 from opendps.brain.prs import PRSBrain

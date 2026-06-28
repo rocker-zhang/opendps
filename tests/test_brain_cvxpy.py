@@ -1,5 +1,5 @@
 from __future__ import annotations
-import time, pytest
+import time
 from opendps.brain.cvxpy_brain import CVXPYBrain
 from opendps.brain.dpm import DomainState
 from opendps.pdn.presets import demo_single_domain

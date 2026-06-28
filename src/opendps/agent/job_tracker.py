@@ -1,7 +1,9 @@
 """Tracks running compute processes per GPU via nvidia-smi."""
 from __future__ import annotations
-import subprocess, threading, time
-from dataclasses import dataclass, field
+import subprocess
+import threading
+import time
+from dataclasses import dataclass
 
 
 @dataclass

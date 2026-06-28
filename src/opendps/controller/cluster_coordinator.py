@@ -1,6 +1,7 @@
 """Multi-node cluster power coordinator (N14 skeleton)."""
 from __future__ import annotations
-import dataclasses, threading, time
+import dataclasses
+import threading
 from typing import Protocol
 
 
@@ -62,7 +63,8 @@ class RedisStore:
         return self._client
 
     def publish(self, state: NodeState) -> None:
-        import json, dataclasses
+        import json
+        import dataclasses
         key = f"{self._PREFIX}{state.node_id}"
         data = json.dumps(dataclasses.asdict(state))
         self._get_client().setex(key, self._ttl, data)

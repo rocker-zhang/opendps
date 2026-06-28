@@ -11,7 +11,10 @@ The Rust agent listens on a socket and accepts cap commands:
 This module is a CLIENT — it connects to a running opendps-agent process.
 """
 from __future__ import annotations
-import json, logging, socket, threading
+import json
+import logging
+import socket
+import threading
 from typing import Optional
 
 logger = logging.getLogger(__name__)

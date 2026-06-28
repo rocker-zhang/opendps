@@ -1,3 +1,5 @@
+from unittest.mock import MagicMock
+
 from opendps.controller.cluster_coordinator import ClusterCoordinator, InMemoryStore, NodeState
 import time
 
@@ -25,9 +27,6 @@ def test_rebalance_min_floor():
     assert budgets["node1"] >= fair * 0.5  # min floor = 50% of fair share
 
 
-from unittest.mock import MagicMock, patch
-
-
 def test_redis_store_publish_and_get_all():
     """Mock redis to verify RedisStore serializes/deserializes NodeState."""
     from opendps.controller.cluster_coordinator import RedisStore, NodeState
@@ -39,7 +38,8 @@ def test_redis_store_publish_and_get_all():
     state0 = NodeState("node0", "d0", 6000.0, 6000.0, 8000.0, time.time())
     state1 = NodeState("node1", "d0", 2000.0, 2000.0, 8000.0, time.time())
 
-    import json, dataclasses
+    import json
+    import dataclasses
     mock_redis.get.side_effect = [
         json.dumps(dataclasses.asdict(state0)),
         json.dumps(dataclasses.asdict(state1)),

@@ -1,5 +1,4 @@
 from unittest.mock import patch, MagicMock
-import socket
 from opendps.controller.agent_bridge import AgentBridge
 
 
