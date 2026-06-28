@@ -1,0 +1,67 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: powerdomains.opendps.io
+spec:
+  group: opendps.io
+  names:
+    kind: PowerDomain
+    plural: powerdomains
+    singular: powerdomain
+    shortNames: ["pd"]
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [gpuIndices, budgetWatts]
+              properties:
+                gpuIndices:
+                  type: array
+                  items:
+                    type: integer
+                  description: "GPU indices managed by this domain"
+                budgetWatts:
+                  type: number
+                  description: "Total power budget in watts"
+                nodeOverheadWatts:
+                  type: number
+                  default: 0.0
+                  description: "Non-GPU node power overhead (W)"
+                nodeName:
+                  type: string
+                  description: "Node where opendps-agent runs (empty = all)"
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                drawWatts:
+                  type: number
+                capWatts:
+                  type: number
+                strandedWatts:
+                  type: number
+                lastUpdated:
+                  type: string
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Budget
+          type: number
+          jsonPath: .spec.budgetWatts
+        - name: Draw
+          type: number
+          jsonPath: .status.drawWatts
+        - name: Stranded
+          type: number
+          jsonPath: .status.strandedWatts
+        - name: Phase
+          type: string
+          jsonPath: .status.phase

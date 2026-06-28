@@ -1,0 +1,46 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: powerpolicies.opendps.io
+spec:
+  group: opendps.io
+  names:
+    kind: PowerPolicy
+    plural: powerpolicies
+    singular: powerpolicy
+    shortNames: ["pp"]
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [domainRef, brain]
+              properties:
+                domainRef:
+                  type: string
+                  description: "Name of the PowerDomain this policy applies to"
+                brain:
+                  type: string
+                  enum: [dpm, prs, cvxpy, job-prs, quota-prs]
+                  description: "Brain algorithm"
+                intervalSeconds:
+                  type: number
+                  default: 5.0
+                cvxpyTimeoutSeconds:
+                  type: number
+                  default: 10.0
+            status:
+              type: object
+              properties:
+                active:
+                  type: boolean
+                lastDecisionTs:
+                  type: string
+      subresources:
+        status: {}

@@ -13,7 +13,7 @@
 ///
 /// Prometheus /metrics served on `--metrics-port` (default 9403).
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use clap::Parser;
@@ -21,6 +21,7 @@ use clap::Parser;
 use opendps_agent::failsafe::{
     spawn_failsafe, CapSink, FailsafeConfig, PowerSource, RecordingCapSink, SimPowerSource,
 };
+use opendps_agent::ipc::{spawn_ipc_listener, SimIpcBackend};
 use opendps_agent::metrics::{serve_metrics, AgentMetrics};
 
 #[derive(Parser, Debug)]
@@ -101,6 +102,10 @@ async fn main() {
     let source = Arc::new(SimPowerSource::new(n, cli.sim_draw_w));
     let sink = Arc::new(RecordingCapSink::new(n));
 
+    // IPC listener — Python AgentBridge connects here.
+    let ipc_bk = SimIpcBackend::new(source.clone(), sink.clone());
+    spawn_ipc_listener(Arc::new(Mutex::new(ipc_bk)), 9500);
+
     start_failsafe_and_run(cli, m, source, sink.clone(), n, move |gpu| {
         sink.last_cap_w(gpu)
     })
@@ -172,7 +177,7 @@ async fn start_failsafe_and_run<P, C, CapFn>(
 
 #[cfg(feature = "nvml")]
 async fn run_nvml_mode(cli: Cli) {
-    use opendps_agent::nvml_backend::nvml::NvmlBackend;
+    use opendps_agent::nvml_backend::nvml::{NvmlBackend, NvmlIpcAdapter};
 
     let backend = Arc::new(NvmlBackend::init().expect("NVML init failed"));
     let n = backend.gpu_count();
@@ -184,6 +189,10 @@ async fn run_nvml_mode(cli: Cli) {
         port = cli.metrics_port,
         "NVML backend ready, metrics started"
     );
+
+    // IPC listener — Python AgentBridge connects here.
+    let ipc_bk = NvmlIpcAdapter::new(backend.clone());
+    spawn_ipc_listener(Arc::new(Mutex::new(ipc_bk)), 9500);
 
     let source = backend.clone();
     let sink = backend.clone();

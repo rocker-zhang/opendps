@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opendps-operator
+  namespace: opendps
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: opendps-operator
+  template:
+    metadata:
+      labels:
+        app: opendps-operator
+    spec:
+      serviceAccountName: opendps-operator
+      containers:
+        - name: operator
+          image: opendps-operator:latest
+          command: ["python", "-m", "opendps.operator"]
+          env:
+            - name: OPENDPS_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: opendps-operator
+  namespace: opendps
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: opendps-operator
+rules:
+  - apiGroups: ["opendps.io"]
+    resources: ["powerdomains", "powerpolicies", "jobpowerpolicies"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["opendps.io"]
+    resources: ["powerdomains/status", "powerpolicies/status", "jobpowerpolicies/status"]
+    verbs: ["update", "patch"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: opendps-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: opendps-operator
+subjects:
+  - kind: ServiceAccount
+    name: opendps-operator
+    namespace: opendps

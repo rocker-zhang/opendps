@@ -77,3 +77,45 @@ class AgentBridge:
     @property
     def is_connected(self) -> bool:
         return self._connected
+
+
+class AgentBridgeActuator:
+    """
+    Actuator that delegates set_power_cap to the Rust opendps-agent via TCP.
+    Telemetry reads (get_power_draw, get_power_cap) return 0.0 — in --prom mode
+    the controller reads telemetry from Prometheus, not the actuator.
+    """
+
+    def __init__(self, host: str = DEFAULT_AGENT_HOST, port: int = DEFAULT_AGENT_PORT):
+        self._bridge = AgentBridge(host=host, port=port)
+        self._last_caps: dict[int, float] = {}
+
+    def set_power_cap(self, gpu_index: int, watts: float) -> None:
+        self._last_caps[gpu_index] = watts
+        # Batch send happens via push_all_caps() called at end of tick
+        # For now, send immediately (one connection per cap, acceptable for 5s interval)
+        self._bridge.push_caps({gpu_index: watts})
+
+    def push_all_caps(self, caps: dict[int, float]) -> bool:
+        """Efficient batch send — call once per tick instead of set_power_cap per GPU."""
+        self._last_caps = caps
+        return self._bridge.push_caps(caps)
+
+    def get_power_cap(self, gpu_index: int) -> float:
+        return self._last_caps.get(gpu_index, 0.0)
+
+    def get_power_draw(self, gpu_index: int) -> float:
+        draws = self._bridge.get_draws()
+        if draws:
+            return draws.get(gpu_index, 0.0)
+        return 0.0
+
+    def get_util_pct(self, gpu_index: int) -> float:
+        return 0.0  # not available via bridge; use Prometheus
+
+    def gpu_count(self) -> int:
+        return 0  # not needed in --prom mode (topology drives this)
+
+    @property
+    def is_connected(self) -> bool:
+        return self._bridge.is_connected

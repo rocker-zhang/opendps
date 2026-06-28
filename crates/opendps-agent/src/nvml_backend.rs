@@ -60,6 +60,14 @@ pub mod nvml {
                 .unwrap_or(0.0)
         }
 
+        /// Current active power management limit, in watts.
+        pub fn current_cap_w(&self, gpu: usize) -> f64 {
+            let d = self.devices[gpu].lock().unwrap();
+            d.power_management_limit()
+                .map(|mw| mw as f64 / 1000.0)
+                .unwrap_or(0.0)
+        }
+
         pub fn name(&self, gpu: usize) -> String {
             let d = self.devices[gpu].lock().unwrap();
             d.name().unwrap_or_else(|_| format!("GPU{gpu}"))
@@ -83,6 +91,42 @@ pub mod nvml {
             if let Err(e) = d.set_power_management_limit(mw) {
                 tracing::error!(gpu, w, "set_power_management_limit failed: {e}");
             }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // NvmlIpcAdapter — bridges Arc<NvmlBackend> into IpcBackend
+    // -----------------------------------------------------------------------
+
+    /// Wraps a shared `Arc<NvmlBackend>` so it can be passed to
+    /// [`crate::ipc::spawn_ipc_listener`] inside an `Arc<Mutex<NvmlIpcAdapter>>`.
+    /// The outer `Mutex` is only held for the duration of each IPC command;
+    /// the inner per-device `Mutex`es in `NvmlBackend` are independent.
+    pub struct NvmlIpcAdapter {
+        inner: std::sync::Arc<NvmlBackend>,
+    }
+
+    impl NvmlIpcAdapter {
+        pub fn new(backend: std::sync::Arc<NvmlBackend>) -> Self {
+            Self { inner: backend }
+        }
+    }
+
+    impl crate::ipc::IpcBackend for NvmlIpcAdapter {
+        fn set_cap(&mut self, gpu: usize, watts: f64) {
+            self.inner.set_cap_w(gpu, watts);
+        }
+
+        fn get_cap(&self, gpu: usize) -> f64 {
+            self.inner.current_cap_w(gpu)
+        }
+
+        fn get_draw(&self, gpu: usize) -> f64 {
+            self.inner.power_draw_w(gpu)
+        }
+
+        fn gpu_count(&self) -> usize {
+            self.inner.gpu_count()
         }
     }
 }

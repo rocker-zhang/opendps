@@ -19,9 +19,11 @@ sim = ["numpy>=1.24"]
 solver = ["numpy>=1.24", "scipy>=1.10"]
 cvxpy = ["cvxpy>=1.4"]
 dashboard = ["fastapi>=0.110", "uvicorn>=0.27"]
+operator = ["kopf>=1.36", "kubernetes>=29.0"]
 dev = ["pytest>=8.0", "ruff>=0.4", "mypy>=1.8"]
 prometheus = ["prometheus-client>=0.20"]
 redis = ["redis>=5.0"]
+nvml = ["pynvml>=11.5"]
 
 [project.scripts]
 opendps-controller = "opendps.controller.standalone:main"

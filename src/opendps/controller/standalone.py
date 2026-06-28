@@ -61,6 +61,9 @@ class ControllerConfig:
     sim_mode: bool = False                                  # if True, read telemetry from actuator
     brain_type: str = "prs"                                 # "dpm" | "prs" | "job-prs"
     metrics_port: int | None = None                         # Prometheus /metrics port (None = disabled)
+    actuator_type: str = "sim"                              # "sim" | "nvml" | "agent"
+    agent_host: str = "127.0.0.1"
+    agent_port: int = 9500
 
 
 class StandaloneController:
@@ -188,8 +191,13 @@ class StandaloneController:
             decisions.append(decision)
 
             if not self._config.dry_run:
-                for gpu_idx, cap_w in decision.caps.items():
-                    self._config.actuator.set_power_cap(gpu_idx, cap_w)
+                # Check the class (not the instance) so MagicMock in tests doesn't
+                # shadow the real method check via __getattr__.
+                if callable(getattr(type(self._config.actuator), 'push_all_caps', None)):
+                    self._config.actuator.push_all_caps(decision.caps)
+                else:
+                    for gpu_idx, cap_w in decision.caps.items():
+                        self._config.actuator.set_power_cap(gpu_idx, cap_w)
             else:
                 log.info("[dry-run] would push caps for domain=%s: %s", domain_name, decision.caps)
 
@@ -308,14 +316,40 @@ def main(argv: list[str] | None = None) -> int:
         metavar="PORT",
         help="Start Prometheus /metrics HTTP server on this port (e.g. 9402)",
     )
+    parser.add_argument(
+        "--actuator",
+        choices=["sim", "nvml", "agent"],
+        default="sim",
+        help=(
+            "Actuator backend: sim = SimBackend (default, no GPU required), "
+            "nvml = direct pynvml calls (requires NVIDIA GPU + pynvml), "
+            "agent = TCP to opendps-agent Rust process at --agent-host:--agent-port"
+        ),
+    )
+    parser.add_argument("--agent-host", default="127.0.0.1", help="opendps-agent host (--actuator agent)")
+    parser.add_argument("--agent-port", type=int, default=9500, help="opendps-agent port (--actuator agent)")
     args = parser.parse_args(argv)
 
     with open(args.config) as fh:
         topology = from_dict(json.load(fh))
 
-    # N1: SimBackend is the only available actuator.  N3 will add the real agent.
-    from opendps.sim.presets import oversub_scenario  # local import avoids circular refs
-    actuator = oversub_scenario(n_gpus=topology.total_gpu_count())
+    if args.actuator == "nvml":
+        try:
+            from opendps.agent.nvml_agent import NvmlActuator
+            actuator = NvmlActuator()
+            log.info("Using NvmlActuator (real GPU caps via pynvml)")
+        except Exception as exc:
+            log.error("NvmlActuator init failed: %s — falling back to sim", exc)
+            from opendps.sim.presets import oversub_scenario
+            actuator = oversub_scenario(n_gpus=topology.total_gpu_count())
+    elif args.actuator == "agent":
+        from opendps.controller.agent_bridge import AgentBridgeActuator
+        actuator = AgentBridgeActuator(host=args.agent_host, port=args.agent_port)
+        log.info("Using AgentBridgeActuator → opendps-agent at %s:%d", args.agent_host, args.agent_port)
+    else:
+        from opendps.sim.presets import oversub_scenario  # local import avoids circular refs
+        actuator = oversub_scenario(n_gpus=topology.total_gpu_count())
+        log.info("Using SimBackend (--actuator sim)")
 
     cfg = ControllerConfig(
         topology=topology,
@@ -326,6 +360,9 @@ def main(argv: list[str] | None = None) -> int:
         sim_mode=args.sim,
         brain_type=args.brain,
         metrics_port=args.metrics_port,
+        actuator_type=args.actuator,
+        agent_host=args.agent_host,
+        agent_port=args.agent_port,
     )
     StandaloneController(cfg).run()
     return 0

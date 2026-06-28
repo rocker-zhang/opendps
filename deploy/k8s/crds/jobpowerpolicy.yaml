@@ -1,0 +1,46 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: jobpowerpolicies.opendps.io
+spec:
+  group: opendps.io
+  names:
+    kind: JobPowerPolicy
+    plural: jobpowerpolicies
+    singular: jobpowerpolicy
+    shortNames: ["jpp"]
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [matchLabels]
+              properties:
+                matchLabels:
+                  type: object
+                  additionalProperties:
+                    type: string
+                  description: "Pod label selector for matching jobs"
+                gpuBoostPct:
+                  type: number
+                  default: 15.0
+                  description: "Cap boost % for matched job GPUs"
+                priorityClass:
+                  type: string
+                  enum: [low, normal, high, critical]
+                  default: normal
+            status:
+              type: object
+              properties:
+                matchedPods:
+                  type: integer
+                activeBoosts:
+                  type: integer
+      subresources:
+        status: {}
