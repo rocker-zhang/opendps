@@ -1,19 +1,26 @@
 # Installation
 
-## Python package (recommended)
+## Python package
+
+> **PyPI release coming soon.** Until then, install directly from GitHub:
 
 ```bash
-# Basic install (brain + controller, no GPU required)
-pip install opendps
+# Basic install
+pip install "opendps @ git+https://github.com/rocker-zhang/opendps"
 
 # With CVXPY optimizer brain
-pip install "opendps[cvxpy]"
+pip install "opendps[cvxpy] @ git+https://github.com/rocker-zhang/opendps"
 
 # With simulation backend (for testing without GPUs)
-pip install "opendps[sim]"
+pip install "opendps[sim] @ git+https://github.com/rocker-zhang/opendps"
+```
 
-# Full install for development
-pip install "opendps[dev,sim,cvxpy]"
+## From source (development)
+
+```bash
+git clone https://github.com/rocker-zhang/opendps
+cd opendps
+pip install -e ".[dev,sim,cvxpy]"
 ```
 
 ## Quick demo (no GPU required)
