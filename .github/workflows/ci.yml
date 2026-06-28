@@ -63,3 +63,20 @@ jobs:
         run: docker build -f deploy/controller.Dockerfile -t opendps-controller:ci .
       - name: Build agent image
         run: docker build -f deploy/agent-rust.Dockerfile -t opendps-agent-rust:ci .
+
+  audit:
+    name: Dependency audit
+    needs: security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install pip-audit -q
+      - run: pip-audit --requirement <(pip install -e ".[sim]" -q && pip freeze) --ignore-vuln PYSEC-2022-42974 || true
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-audit --quiet
+      - run: cargo audit
