@@ -7,7 +7,16 @@ on:
     branches: [main]
 
 jobs:
+  security:
+    name: Security & privacy check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run security-check
+        run: bash scripts/security-check.sh
+
   python:
+    needs: security
     name: Python tests
     runs-on: ubuntu-latest
     steps:
@@ -24,6 +33,7 @@ jobs:
         run: pytest tests/ -x -q --tb=short
 
   rust:
+    needs: security
     name: Rust tests
     runs-on: ubuntu-latest
     steps:
@@ -40,6 +50,7 @@ jobs:
         run: cargo test --workspace
 
   docker:
+    needs: security
     name: Docker build
     runs-on: ubuntu-latest
     steps:

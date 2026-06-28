@@ -133,7 +133,7 @@ _Last updated: 2026-06-28_
 ## N8 — Chassis power integration (IPMI + DCGM field 160)
 
 **Motivation**: Analysis of closed-source NVIDIA DPS vs opendps reveals a ~15–20% power undercount.  
-Our stack sees only per-GPU draw (NVML/DCGM). A real datacenter node's total draw includes:
+opendps sees only per-GPU draw (NVML/DCGM). A real datacenter node's total draw includes:
 
 | Component | Approximate power | Visibility before N8 |
 |---|---|---|
@@ -223,7 +223,7 @@ _Phase 2 plan locked: 2026-06-27_
 **Deliverables**:
 - `src/opendps/brain/cvxpy_brain.py` — `CVXPYBrain` with LP minimize-wasted-headroom
 - `--brain cvxpy` in StandaloneController
-- Solve time < 50ms for 10 GPUs (tested)
+- Solve time < 50ms for 10 GPUs
 - Graceful PRS fallback if cvxpy unavailable
 
 ## N12 — Job-awareness (nvidia-smi process tracking)

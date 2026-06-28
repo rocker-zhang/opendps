@@ -40,9 +40,42 @@ another:
 - One-shot large logs (e.g. a passing test suite) are not re-fed; grep the
   verdict line + key markers instead.
 
-## 3. Lab discipline (local GB10) — strict isolation
+## 3. Privacy and attribution rules — mandatory
 
-The local GB10 (DGX Spark) is the primary lab. All lab work must be isolated:
+Every public-facing file (README, docs, code comments, commit messages, release notes)
+must pass this checklist **before** commit:
+
+**Hardware naming:**
+- Use only the public NVIDIA model name: "B300 SXM6", "GB200", "A100" — no
+  SKU suffixes (AC, NVL, etc.) that narrow down the supplier or organization.
+- Do not write exact per-node or cluster GPU counts that reveal fleet scale.
+
+**Organization / career:**
+- Zero employer names, team names, cluster names, datacenter codenames, or
+  internal project names in any committed file.
+- Phrases like "our cluster", "in production at", "deployed at \[org\]",
+  "tested on N nodes" imply organizational context — remove or generalize.
+- Lab hardware references in code comments: use the GPU model, not lab names
+  ("B300 SXM6" not "ssh29" or "the control lab").
+
+**Commit messages:**
+- No `Co-Authored-By: Claude` / `Claude-Session:` trailers.
+- No "AI" anywhere in a commit message, PR body, or issue.
+
+**AI workflows:**
+- Do not create or commit AI-based CI workflows (e.g. GitHub Actions PR review
+  bots) to public repos without explicit maintainer request.
+
+**Self-check:**
+Before committing docs or comments, grep for: `cluster`, `internal`, `ssh`,
+`jump`, `proxy`, `prod`, `company`, `employer`, `team`, and any company name.
+Fix anything that hits.
+
+---
+
+## 4. Lab discipline — strict isolation
+
+All lab work must be isolated:
 
 - **Python work runs in a project-local `venv`**, never the global interpreter.
   Do not `pip install` into system Python. Pin deps in a `requirements.txt` /

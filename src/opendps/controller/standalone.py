@@ -98,7 +98,7 @@ class StandaloneController:
             from opendps.brain.quota_prs import QuotaAwarePRSBrain
             from opendps.pdn.quota import QuotaConfig, TenantQuota
             from typing import Any
-            # Default: two tenants splitting GPUs 60/40 (override via config file in production)
+            # Default: two tenants splitting GPUs 60/40 (override via config file)
             n = len(list(config.topology.domains.values())[0].gpu_indices)
             half = n // 2
             quota = QuotaConfig(

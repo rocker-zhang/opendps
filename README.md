@@ -87,7 +87,7 @@ See [ROADMAP.md](docs/ROADMAP.md) for full milestone details.
 |---|---|---|---|
 | GB10 / DGX Spark | Yes | No | Local dev + sim |
 | A10 / A100 | Yes | Yes | NVML `-pl` path |
-| B300 SXM6 AC | Yes | Yes | Up to ~1100W |
+| B300 SXM6 | Yes | Yes | Up to ~1100W |
 | GB200 | Yes | Yes | Up to ~1200W |
 
 ## Contributing
