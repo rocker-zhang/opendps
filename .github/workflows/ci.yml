@@ -8,12 +8,16 @@ on:
 
 jobs:
   security:
-    name: Security & privacy check
+    name: Secret scan
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Run security-check
-        run: bash scripts/security-check.sh
+        with:
+          fetch-depth: 0
+      - name: Scan for secrets (gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   python:
     needs: security
