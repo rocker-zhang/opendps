@@ -70,6 +70,9 @@ class ControllerConfig:
     ewma_alpha: float = 0.3
     # N6 — sim/demo: GPUs to mark busy for job-prs without nvidia-smi
     busy_gpus: list[int] = field(default_factory=list)
+    # "prom" (default) reads draws from Prometheus; "actuator" reads them
+    # directly from the actuator (real NVML node without a telemetry plane).
+    telemetry: str = "prom"
 
 
 class StandaloneController:
@@ -136,9 +139,10 @@ class StandaloneController:
             self._brain: Any = QuotaAwarePRSBrain(config.topology, quota)
         else:
             self._brain = DPMBrain(config.topology)
-        # Only create a PromClient when we will actually use it.
+        # Only create a PromClient when draws actually come from Prometheus.
+        _use_prom = not config.sim_mode and config.telemetry != "actuator"
         self._client: PromClient | None = (
-            None if config.sim_mode else PromClient(config.prom_url)
+            PromClient(config.prom_url) if _use_prom else None
         )
         self._managed_domains: list[str] = (
             list(config.domain_names) if config.domain_names else list(config.topology.domains)
@@ -159,10 +163,13 @@ class StandaloneController:
         In prom mode, raises on Prometheus connectivity errors — callers decide
         whether to swallow or propagate.
         """
-        if self._config.sim_mode:
-            # Closed-loop sim: read telemetry directly from the actuator.
+        # Read telemetry from the actuator directly (no Prometheus) in sim mode
+        # or when --telemetry actuator is set — e.g. a real NVML node where the
+        # agent/actuator can report live draws. Otherwise pull from Prometheus.
+        read_actuator = self._config.sim_mode or self._config.telemetry == "actuator"
+        if read_actuator:
             ts = time.time()
-            gpu_by_index = None  # not used in sim mode
+            gpu_by_index = None
         else:
             node_sample = NodeSampleFromProm(self._client)
             gpu_by_index = {g.index: g for g in node_sample.gpus}
@@ -179,7 +186,7 @@ class StandaloneController:
             fallback_cap = domain.budget_w / max(len(domain.gpu_indices), 1)
 
             for idx in domain.gpu_indices:
-                if self._config.sim_mode:
+                if read_actuator:
                     gpu_draws[idx] = self._config.actuator.get_power_draw(idx)
                     gpu_caps[idx] = self._config.actuator.get_power_cap(idx)
                     if hasattr(self._config.actuator, "get_max_cap_w"):
@@ -370,6 +377,12 @@ def main(argv: list[str] | None = None) -> int:
         metavar="IDX,IDX",
         help="N6: comma-separated GPU indices to mark busy for --brain job-prs in sim (no nvidia-smi)",
     )
+    parser.add_argument(
+        "--telemetry",
+        choices=["prom", "actuator"],
+        default="prom",
+        help="draw source: 'prom' (Prometheus) or 'actuator' (read directly from the actuator, e.g. real NVML node without Prometheus)",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -425,6 +438,7 @@ def main(argv: list[str] | None = None) -> int:
         cap_raise_rate_w_per_tick=cap_raise_rate,
         ewma_alpha=ewma_alpha,
         busy_gpus=busy_gpus,
+        telemetry=args.telemetry,
     )
     StandaloneController(cfg).run()
     return 0

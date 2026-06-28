@@ -70,3 +70,26 @@ def test_dpm_strands_more_than_prs_in_sim():
     assert dpm > 1000.0, f"DPM baseline should strand >1000 W, got {dpm:.0f}"
     # Same bound as scripts/demo.sh (>70% reclaim); scenario is deterministic.
     assert prs < dpm * 0.3, f"PRS should reclaim >70% of stranded watts: prs={prs:.0f} dpm={dpm:.0f}"
+
+
+def test_telemetry_actuator_reads_draws_without_prometheus():
+    """--telemetry actuator closes the loop on a real NVML node: draws come from
+    the actuator, no PromClient is created, and caps are still pushed."""
+    from opendps.controller.standalone import ControllerConfig, StandaloneController
+    from opendps.pdn.presets import demo_single_domain
+    from opendps.sim.presets import oversub_scenario
+
+    topo = demo_single_domain(n_gpus=10, budget_w=8000.0)
+    cfg = ControllerConfig(
+        topology=topo,
+        actuator=oversub_scenario(n_gpus=10),
+        sim_mode=False,            # not sim — but...
+        telemetry="actuator",     # ...read draws straight from the actuator
+        brain_type="prs",
+        metrics_port=None,
+        actuator_type="sim",
+    )
+    ctl = StandaloneController(cfg)
+    assert ctl._client is None, "no PromClient should be created for --telemetry actuator"
+    decisions = ctl.run_once()
+    assert decisions and decisions[0].caps, "controller should produce caps from actuator draws"

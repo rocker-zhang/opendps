@@ -12,6 +12,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT/crates/opendps-agent"
+# Cargo workspace: binaries land in the workspace target dir, not the crate's.
+AGENT_BIN="$ROOT/target/release/opendps-agent"
 
 echo "=== DC4.1: failsafe loop latency benchmark (no GPU required) ==="
 cargo bench --bench bench_failsafe 2>&1 | grep -iE "p50|p99|latency|time:|µs|us" || \
@@ -36,7 +38,7 @@ if command -v nvidia-smi >/dev/null 2>&1; then
   PORT="${OPENDPS_METRICS_PORT:-9403}"
   HOST="${OPENDPS_HOST:-127.0.0.1}"
   echo "Trip threshold=${THRESH}W (below max idle draw ${MAX_DRAW}W); emergency cap=${CAP}W (min limit ${MIN_LIMIT}W)."
-  ./target/release/opendps-agent \
+  "$AGENT_BIN" \
     --nvml \
     --failsafe-threshold-w "$THRESH" \
     --failsafe-cap-w "$CAP" \
