@@ -1,0 +1,93 @@
+services:
+  dcgm-exporter:
+    image: nvcr.io/nvidia/k8s/dcgm-exporter:latest
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    volumes:
+      - ./dcgm-fields.csv:/etc/dcgm-exporter/counters.csv:ro
+    ports:
+      - "9400:9400"
+    networks:
+      - opendps
+    profiles:
+      - gpu
+
+  sim-metrics:
+    build: ./sim-metrics
+    ports:
+      - "9401:9401"
+    networks:
+      - opendps
+
+  opendps-agent-rust:
+    build:
+      context: ..
+      dockerfile: deploy/agent-rust.Dockerfile
+    ports:
+      - "9403:9403"
+    networks:
+      - opendps
+    restart: unless-stopped
+
+  opendps-controller:
+    build:
+      context: ..
+      dockerfile: deploy/controller.Dockerfile
+    ports:
+      - "9402:9402"
+    networks:
+      - opendps
+    depends_on:
+      - sim-metrics
+    restart: unless-stopped
+
+  ipmi-exporter:
+    image: prometheuscommunity/ipmi-exporter:latest
+    ports:
+      - "9290:9290"
+    networks:
+      - opendps
+    profiles:
+      - ipmi
+    cap_add:
+      - SYS_RAWIO
+    volumes:
+      - ./ipmi-exporter.yml:/config.yml:ro
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./alerting.yml:/etc/prometheus/alerting.yml:ro
+    ports:
+      - "9090:9090"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - opendps
+    depends_on:
+      - sim-metrics
+      - opendps-controller
+
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - ./grafana/dashboards:/var/lib/grafana/dashboards
+    networks:
+      - opendps
+    depends_on:
+      - prometheus
+
+networks:
+  opendps:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: "172.28.0.0/24"

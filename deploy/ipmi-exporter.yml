@@ -1,0 +1,9 @@
+modules:
+  default:
+    user: ""
+    password: ""
+    collectors:
+      - dcmi
+      - bmc
+      - chassis
+    exclude_sensor_ids: []

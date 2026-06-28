@@ -1,0 +1,38 @@
+[package]
+name = "opendps-agent"
+version = "0.1.0"
+edition = "2021"
+description = "opendps GPU power cap agent — Rust hot path (P2-M1 through P2-M3)"
+license = "Apache-2.0"
+
+# Feature gates: build without NVML by default (sim mode for tests/CI)
+[lib]
+name = "opendps_agent"
+path = "src/lib.rs"
+
+[[bin]]
+name = "opendps-agent"
+path = "src/main.rs"
+
+[features]
+default = ["sim"]
+nvml = ["dep:nvml-wrapper"]
+sim = []
+
+[dependencies]
+nvml-wrapper = { version = "0.12.1", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal"] }
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+tokio = { version = "1", features = ["full"] }
+
+[[bench]]
+name = "bench_failsafe"
+harness = false

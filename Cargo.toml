@@ -1,0 +1,3 @@
+[workspace]
+members = ["crates/opendps-agent", "crates/opendps-sim"]
+resolver = "2"

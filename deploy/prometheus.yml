@@ -1,0 +1,46 @@
+global:
+  scrape_interval: 5s
+
+rule_files:
+  - /etc/prometheus/alerting.yml
+
+scrape_configs:
+  - job_name: dcgm
+    static_configs:
+      - targets: ['dcgm-exporter:9400']
+
+  - job_name: sim
+    static_configs:
+      - targets: ['sim-metrics:9401']
+
+  - job_name: opendps
+    static_configs:
+      - targets: ['opendps-controller:9402']
+
+  - job_name: opendps-agent-rust
+    static_configs:
+      - targets: ['opendps-agent-rust:9403']
+
+  - job_name: dcgm-gb200
+    static_configs:
+      - targets: ['host.docker.internal:9410']  # SSH tunnel: host:9410 → remote dcgm-exporter:9400
+        labels:
+          node: gb200
+
+  - job_name: ipmi
+    scrape_interval: 30s
+    scrape_timeout: 25s
+    metrics_path: /ipmi
+    params:
+      module: [default]
+    static_configs:
+      - targets: ['host.docker.internal']  # IPMI exporter on the host
+        labels:
+          node: local
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: ipmi-exporter:9290

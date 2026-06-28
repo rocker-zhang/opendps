@@ -1,0 +1,7 @@
+apiVersion: 1
+providers:
+  - name: opendps
+    folder: opendps
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards

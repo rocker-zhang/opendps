@@ -1,0 +1,18 @@
+{
+  "pdus": {
+    "pdu0": {
+      "name": "pdu0",
+      "capacity_w": 9778.0,
+      "derating": 0.9
+    }
+  },
+  "domains": {
+    "domain0": {
+      "name": "domain0",
+      "budget_w": 8000.0,
+      "gpu_indices": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+      "pdu_name": "pdu0",
+      "priority": 0
+    }
+  }
+}

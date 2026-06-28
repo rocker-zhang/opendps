@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# Rust
+target/
+Cargo.lock.bak
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment
+.env
+.env.*
+*.env
+
+# Secrets
+*.pem
+*.key
+id_rsa*
+*.pfx
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data / lab artifacts (telemetry traces, scratch)
+*.parquet
+data/
+traces/
+*.log
+
+# Local docs that must never be published
+*.pdf
+scratch/
+
+# Local lab config (NEVER commit)
+deploy/lab-*.yml
+deploy/*-local.yml
+
+# Claude Code developer config (machine-local, never publish)
+.claude/

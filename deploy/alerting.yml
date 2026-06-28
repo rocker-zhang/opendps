@@ -1,0 +1,26 @@
+groups:
+  - name: opendps
+    rules:
+      - alert: PowerDomainOverBudget
+        expr: opendps_domain_power_draw_watts > 8000 * 1.05
+        for: 30s
+        labels:
+          severity: warning
+        annotations:
+          summary: "Domain {{ $labels.domain }} draw {{ $value }}W > budget"
+
+      - alert: FailsafeTripRateHigh
+        expr: increase(opendps_failsafe_trip_total[5m]) > 3
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Failsafe tripping frequently in domain {{ $labels.domain }}"
+
+      - alert: IdleStrandedWattsHigh
+        expr: opendps_idle_stranded_watts > 2000
+        for: 5m
+        labels:
+          severity: info
+        annotations:
+          summary: "{{ $value }}W stranded in domain {{ $labels.domain }}"

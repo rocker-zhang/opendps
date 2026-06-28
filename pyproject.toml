@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "opendps"
+version = "0.0.1"
+description = "Open-source, vendor-neutral datacenter GPU dynamic power-management stack (telemetry, profiling, closed-loop capping)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "nvidia-ml-py>=12.535.0",
+    "prometheus-client>=0.20",
+]
+
+[project.optional-dependencies]
+sim = ["numpy>=1.24"]
+solver = ["numpy>=1.24", "scipy>=1.10"]
+cvxpy = ["cvxpy>=1.4"]
+dashboard = ["fastapi>=0.110", "uvicorn>=0.27"]
+dev = ["pytest>=8.0", "ruff>=0.4", "mypy>=1.8"]
+prometheus = ["prometheus-client>=0.20"]
+
+[project.scripts]
+opendps-controller = "opendps.controller.standalone:main"
+opendps-agent = "opendps.agent.process:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

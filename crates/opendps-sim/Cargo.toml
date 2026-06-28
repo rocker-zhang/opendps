@@ -1,0 +1,21 @@
+[package]
+name = "opendps-sim"
+version = "0.1.0"
+edition = "2021"
+description = "opendps Rust SimBackend exposed to Python via PyO3 (P2-M4)"
+license = "Apache-2.0"
+
+[lib]
+name = "opendps_sim"
+crate-type = ["cdylib", "rlib"]  # cdylib for Python extension, rlib for Rust tests
+
+[features]
+# Build as a Python extension module (maturin / pip install)
+extension-module = ["pyo3/extension-module"]
+default = ["extension-module"]
+
+[dependencies]
+pyo3 = { version = "0.29", features = ["extension-module"] }
+
+[dev-dependencies]
+pyo3 = { version = "0.29", features = ["auto-initialize"] }
