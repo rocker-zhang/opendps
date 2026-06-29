@@ -51,6 +51,20 @@ stranded_for() {
 
 is_num() { [[ "$1" =~ ^[0-9]+(\.[0-9]+)?$ ]]; }
 
+# Sum opendps_gpu_power_cap_watts over a set of GPU indices (for N13/DC8).
+# Args: <metrics-text> <gpu-index>...   Matches the exact gpu="N"} label suffix
+# so gpu="6" never collides with gpu="60".
+tenant_cap_sum() {
+  local metrics=$1; shift
+  local total=0 g v
+  for g in "$@"; do
+    v=$(printf '%s\n' "$metrics" \
+        | awk -v tag="gpu=\"$g\"}" '/^opendps_gpu_power_cap_watts\{/ && index($0, tag) {print $2}')
+    is_num "$v" && total=$(awk "BEGIN{print $total + $v}")
+  done
+  echo "$total"
+}
+
 # DC1 — single-workstation stack comes up.
 say "DC1: sim stack reachable"
 if curl -sf "$HOST:$PROM_PORT/-/healthy" >/dev/null 2>&1; then
@@ -120,6 +134,29 @@ sleep 4
 kill "$CV_PID" 2>/dev/null || true; wait "$CV_PID" 2>/dev/null || true
 trap - INT TERM EXIT
 if grep -q "cvxpy:optimal" "$CV_LOG"; then ok "CVXPY reports optimal solve"; else bad "no cvxpy:optimal in solver log"; fi
+
+# DC8 — N13 per-tenant quota enforcement. tenant-a gets 60% of the 8000 W domain
+# budget (GPUs 0-5), tenant-b 40% (GPUs 6-9). In the oversubscribed scenario the
+# brain pins each tenant to its slice: tenant-a's caps sum to <=4800 W (busy),
+# tenant-b's to <=3200 W (idle, reclaimed below its ceiling).
+say "DC8: per-tenant quota enforcement (N13)"
+"${CTL[@]}" --sim --brain quota-prs --config "$CONFIG" \
+  --quota-config deploy/quota-demo.json --metrics-port 19423 --interval 0.5 >/dev/null 2>&1 &
+Q_PID=$!
+trap 'kill "$Q_PID" 2>/dev/null || true' INT TERM EXIT
+sleep 4
+Q_METRICS=$(curl -s "$HOST:19423/metrics" 2>/dev/null || true)
+kill "$Q_PID" 2>/dev/null || true; wait "$Q_PID" 2>/dev/null || true
+trap - INT TERM EXIT
+CAP_A=$(tenant_cap_sum "$Q_METRICS" 0 1 2 3 4 5)
+CAP_B=$(tenant_cap_sum "$Q_METRICS" 6 7 8 9)
+if is_num "$CAP_A" && is_num "$CAP_B" && awk "BEGIN{exit !($CAP_A>0 && $CAP_B>0)}"; then
+  printf "  tenant-a caps = %.0f W (60%% slice = 4800)\n  tenant-b caps = %.0f W (40%% slice = 3200)\n" "$CAP_A" "$CAP_B"
+  if awk "BEGIN{exit !($CAP_A <= 4800 + 1)}"; then ok "tenant-a held within its 60% slice (<=4800 W)"; else bad "tenant-a exceeded slice: $CAP_A W"; fi
+  if awk "BEGIN{exit !($CAP_B <= 3200 + 1)}"; then ok "tenant-b held within its 40% slice (<=3200 W)"; else bad "tenant-b exceeded slice: $CAP_B W"; fi
+else
+  bad "quota-prs exported no per-GPU cap metrics (A=$CAP_A B=$CAP_B)"
+fi
 
 # DC4 — real GPU failsafe latency (hardware-gated).
 say "DC4: real-GPU failsafe latency"

@@ -1,0 +1,7 @@
+{
+  "domain_name": "domain0",
+  "tenants": [
+    {"tenant_id": "tenant-a", "gpu_indices": [0, 1, 2, 3, 4, 5], "max_watts_pct": 0.6},
+    {"tenant_id": "tenant-b", "gpu_indices": [6, 7, 8, 9], "max_watts_pct": 0.4}
+  ]
+}
