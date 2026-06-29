@@ -25,6 +25,8 @@ class JobAwarePRSBrain:
         priority_boost: float = 0.15,
         **prs_kwargs,
     ):
+        if priority_boost < 0:
+            raise ValueError(f"priority_boost must be >= 0, got {priority_boost}")
         self._topology = topology
         self._prs = PRSBrain(topology, **prs_kwargs)
         self._tracker = job_tracker

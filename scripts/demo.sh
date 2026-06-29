@@ -65,6 +65,21 @@ tenant_cap_sum() {
   echo "$total"
 }
 
+# Poll a /metrics endpoint until per-GPU cap lines appear (or timeout). Echoes
+# the metrics body. Avoids a fixed sleep that flakes when the controller is slow
+# to publish on a loaded CI runner.
+wait_for_caps() {
+  local url=$1 deadline=$((SECONDS + ${2:-15})) body=""
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    body=$(curl -s "$url" 2>/dev/null || true)
+    if printf '%s\n' "$body" | grep -q '^opendps_gpu_power_cap_watts{'; then
+      printf '%s' "$body"; return 0
+    fi
+    sleep 0.5
+  done
+  printf '%s' "$body"  # last body (possibly empty) — caller validates
+}
+
 # DC1 — single-workstation stack comes up.
 say "DC1: sim stack reachable"
 if curl -sf "$HOST:$PROM_PORT/-/healthy" >/dev/null 2>&1; then
@@ -144,8 +159,7 @@ say "DC8: per-tenant quota enforcement (N13)"
   --quota-config deploy/quota-demo.json --metrics-port 19423 --interval 0.5 >/dev/null 2>&1 &
 Q_PID=$!
 trap 'kill "$Q_PID" 2>/dev/null || true' INT TERM EXIT
-sleep 4
-Q_METRICS=$(curl -s "$HOST:19423/metrics" 2>/dev/null || true)
+Q_METRICS=$(wait_for_caps "$HOST:19423/metrics" 15)
 kill "$Q_PID" 2>/dev/null || true; wait "$Q_PID" 2>/dev/null || true
 trap - INT TERM EXIT
 CAP_A=$(tenant_cap_sum "$Q_METRICS" 0 1 2 3 4 5)
@@ -156,6 +170,29 @@ if is_num "$CAP_A" && is_num "$CAP_B" && awk "BEGIN{exit !($CAP_A>0 && $CAP_B>0)
   if awk "BEGIN{exit !($CAP_B <= 3200 + 1)}"; then ok "tenant-b held within its 40% slice (<=3200 W)"; else bad "tenant-b exceeded slice: $CAP_B W"; fi
 else
   bad "quota-prs exported no per-GPU cap metrics (A=$CAP_A B=$CAP_B)"
+fi
+
+# DC9 — N12 job-aware priority boost. GPUs 0,1 carry the same load as 2-5 but
+# are marked busy (active job), so --priority-boost lifts their caps above the
+# equally-loaded no-job GPUs. A tight budget (topology-jobdemo) makes the boost
+# bind instead of everyone sitting at hardware max.
+say "DC9: job-aware priority boost (N12)"
+"${CTL[@]}" --sim --brain job-prs --config deploy/topology-jobdemo.json \
+  --busy-gpus 0,1 --priority-boost 0.30 --metrics-port 19424 --interval 0.4 >/dev/null 2>&1 &
+J_PID=$!
+trap 'kill "$J_PID" 2>/dev/null || true' INT TERM EXIT
+J_METRICS=$(wait_for_caps "$HOST:19424/metrics" 15)
+kill "$J_PID" 2>/dev/null || true; wait "$J_PID" 2>/dev/null || true
+trap - INT TERM EXIT
+BOOSTED=$(tenant_cap_sum "$J_METRICS" 0 1)      # 2 busy/boosted GPUs
+PLAIN=$(tenant_cap_sum "$J_METRICS" 2 3 4 5)    # 4 equally-loaded GPUs, no job
+if is_num "$BOOSTED" && is_num "$PLAIN" && awk "BEGIN{exit !($BOOSTED>0 && $PLAIN>0)}"; then
+  printf "  busy(job) GPU avg cap = %.0f W; no-job GPU avg cap = %.0f W\n" \
+    "$(awk "BEGIN{print $BOOSTED/2}")" "$(awk "BEGIN{print $PLAIN/4}")"
+  # Compare raw float sums (boosted/2 vs plain/4) to avoid printf rounding at the boundary.
+  if awk "BEGIN{exit !($BOOSTED/2 > ($PLAIN/4) * 1.1)}"; then ok "job GPUs boosted above equally-loaded GPUs (>10%)"; else bad "no boost: busy_sum=$BOOSTED plain_sum=$PLAIN"; fi
+else
+  bad "job-prs exported no per-GPU cap metrics (busy=$BOOSTED plain=$PLAIN)"
 fi
 
 # DC4 — real GPU failsafe latency (hardware-gated).
