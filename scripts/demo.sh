@@ -195,6 +195,26 @@ else
   bad "job-prs exported no per-GPU cap metrics (busy=$BOOSTED plain=$PLAIN)"
 fi
 
+# DC10 — N14 multi-node cluster coordination. One busy node + two idle nodes
+# share a cluster budget; the coordinator gives the busy node more, the idle
+# nodes their floor, and never oversubscribes (Σ budgets <= cluster budget).
+say "DC10: multi-node cluster coordination (N14)"
+N14_OUT=$(python -m opendps.controller.cluster_coordinator --sim \
+  --cluster-budget-w 12000 --nodes node0=8000,node1=500,node2=500 2>/dev/null || true)
+node_budget() { printf '%s\n' "$N14_OUT" | awk -v tag="node=\"$1\"}" '/^opendps_cluster_node_budget_w\{/ && index($0,tag){print $2}'; }
+B0=$(node_budget node0); B1=$(node_budget node1); TOT=$(printf '%s\n' "$N14_OUT" | sed -n 's/.*total_allocated_w=//p')
+if is_num "$B0" && is_num "$B1" && is_num "$TOT"; then
+  # is_num rejects scientific notation; fine here since Python prints plain
+  # decimals for watt-scale floats (only >~1e15 would format as 1e+15).
+  printf "  busy node0 = %.0f W; node1 = %.0f W; total = %.0f W (budget 12000)\n" "$B0" "$B1" "$TOT"
+  if awk "BEGIN{exit !($B0 > $B1)}"; then ok "busy node gets a larger cluster budget share"; else bad "busy node not prioritised: node0=$B0 node1=$B1"; fi
+  # Hard invariant: never oversubscribe the cluster power budget. The algorithm
+  # guarantees Σ==budget exactly bar float epsilon, so the slack is tiny (0.01 W).
+  if awk "BEGIN{exit !($TOT <= 12000 + 0.01)}"; then ok "cluster budget not oversubscribed (Σ<=12000 W)"; else bad "oversubscribed: total=$TOT"; fi
+else
+  bad "coordinator produced no node budgets (B0=$B0 B1=$B1 TOT=$TOT)"
+fi
+
 # DC4 — real GPU failsafe latency (hardware-gated).
 say "DC4: real-GPU failsafe latency"
 gate "requires a cap-capable GPU node (A10/B300/GB200) — run scripts/hw_failsafe.sh there"

@@ -1,6 +1,7 @@
 """Multi-node cluster power coordinator (N14 skeleton)."""
 from __future__ import annotations
 import dataclasses
+import math
 import threading
 from typing import Protocol
 
@@ -107,18 +108,102 @@ class ClusterCoordinator:
             return self._node_budgets.get(node_id)
 
     def rebalance(self) -> dict[str, float]:
-        """Redistribute budget proportionally to recent draw."""
+        """Redistribute the cluster budget across nodes proportionally to recent
+        draw, holding the hard invariant ``Σ(budgets) ≤ cluster_budget``.
+
+        Power is a physical ceiling: oversubscribing the cluster is the
+        dangerous failure, so the budget is never exceeded. Each node first gets
+        a floor of 50% of its fair share — the floors sum to exactly 50% of the
+        cluster budget, so they are always affordable — then the remaining 50%
+        surplus is handed out in proportion to draw, with each node capped at
+        200% of fair share. If the ceiling caps a hot node, the unused surplus is
+        left as cluster headroom rather than oversubscribed.
+        """
         states = self._store.get_all()
         if not states:
             return {}
         n = len(states)
         fair = self._cluster_budget / n
+        floor = fair * 0.5
+        ceil = fair * 2.0
+        surplus = self._cluster_budget - floor * n  # = 50% of the cluster budget
         total_draw = sum(s.draw_w for s in states) or 1.0
         new_budgets: dict[str, float] = {}
         for s in states:
-            proportional = (s.draw_w / total_draw) * self._cluster_budget
-            # Clamp: never drop below 50% of fair share
-            new_budgets[s.node_id] = max(fair * 0.5, min(proportional, fair * 2.0))
+            extra = (s.draw_w / total_draw) * surplus
+            new_budgets[s.node_id] = min(floor + extra, ceil)
         with self._lock:
-            self._node_budgets = new_budgets
+            self._node_budgets = dict(new_budgets)
         return new_budgets
+
+
+def _parse_nodes(spec: str) -> list[tuple[str, float]]:
+    """Parse ``node0=8000,node1=500`` into ``[(node_id, draw_w), ...]``."""
+    nodes: list[tuple[str, float]] = []
+    for item in spec.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if "=" not in item:
+            raise ValueError(f"bad --nodes entry {item!r}, expected node_id=draw_w")
+        nid, draw = item.split("=", 1)
+        nid = nid.strip()
+        if not nid:
+            raise ValueError(f"empty node id in --nodes entry {item!r}")
+        draw_w = float(draw)  # raises ValueError on non-numeric junk
+        # NaN/Inf parse fine via float() but would poison the rebalance math
+        # (NaN budgets, broken Σ≤budget); negative draw is physically impossible.
+        if not math.isfinite(draw_w):
+            raise ValueError(f"draw for {nid!r} must be finite, got {draw!r}")
+        if draw_w < 0:
+            raise ValueError(f"draw for {nid!r} must be >= 0, got {draw_w}")
+        nodes.append((nid, draw_w))
+    return nodes
+
+
+def main(argv: list[str] | None = None) -> int:
+    """One-shot sim rebalance: publish the given node draws to an in-memory
+    store, run the coordinator once, and print the per-node budgets. This is the
+    demo/CLI entry point for N14 (``python -m opendps.controller.cluster_coordinator``)."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="opendps-coordinator",
+        description="N14 multi-node cluster power coordinator (one-shot sim rebalance).",
+    )
+    parser.add_argument("--cluster-budget-w", type=float, required=True,
+                        help="total power budget shared across all nodes (W)")
+    parser.add_argument("--nodes", required=True, metavar="ID=DRAW,...",
+                        help="comma-separated node states as node_id=draw_w")
+    parser.add_argument("--sim", action="store_true",
+                        help="one-shot in-memory rebalance over --nodes (the only mode today)")
+    args = parser.parse_args(argv)
+
+    # NaN/Inf pass `float()` but break the rebalance math (`nan <= 0` is False),
+    # so reject non-finite budgets too — not just non-positive ones.
+    if not math.isfinite(args.cluster_budget_w) or args.cluster_budget_w <= 0:
+        parser.error("--cluster-budget-w must be a finite number > 0")
+    try:
+        nodes = _parse_nodes(args.nodes)
+    except ValueError as exc:
+        parser.error(str(exc))
+    if not nodes:
+        parser.error("--nodes must list at least one node")
+
+    store = InMemoryStore()
+    for nid, draw in nodes:
+        store.publish(NodeState(node_id=nid, domain_name=nid, draw_w=draw,
+                                cap_w=draw, budget_w=0.0, ts=0.0))
+    coord = ClusterCoordinator(store, total_cluster_budget_w=args.cluster_budget_w)
+    budgets = coord.rebalance()
+    total = sum(budgets.values())
+    for nid, b in budgets.items():
+        print(f'opendps_cluster_node_budget_w{{node="{nid}"}} {b}')
+    print(f"cluster_budget_w={args.cluster_budget_w} total_allocated_w={total}")
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+
+    sys.exit(main())

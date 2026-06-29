@@ -23,14 +23,15 @@ Achieve functional parity with closed-source NVIDIA DPS across three dimensions:
 | Job-awareness (GPU → job mapping via `nvidia-smi --query-compute-apps`) | Important | N12 ✅ (configurable `--priority-boost`; wired into the demo path as `demo.sh` DC9; [design doc](N12-job-awareness.md)) |
 | Production hardening (/healthz, alerting, watchdog, config reload) | Important | N9 ✅ |
 | Per-tenant quota enforcement | Nice | N13 ✅ (QuotaAwarePRSBrain, config-driven via `--quota-config`; wired into the demo path as `demo.sh` DC8; [design doc](N13-quota-enforcement.md)) |
-| Multi-node cluster coordinator | Nice | N14 ✅ (skeleton: proportional rebalancer + in-memory/mock store; no live multi-node run) |
+| Multi-node cluster coordinator | Nice | N14 ✅ (proportional rebalancer with a hard Σ≤budget invariant; CLI + sim demo `demo.sh` DC10; [design doc](N14-multinode.md)) |
 
 > Validation depth varies by milestone. N0–N7 are exercised end-to-end (sim +
-> real GPU node); N12 (job-aware boost) and N13 (per-tenant quota) are now
-> config-driven and exercised in the sim demo (`demo.sh` DC9 / DC8). N10
-> (Redfish) and N14 (multi-node) are implemented and unit-tested but remain
-> **skeletons not wired into the default demo path** — they need a BMC NIC or a
-> multi-node cluster to exercise live.
+> real GPU node); N12 (job-aware boost), N13 (per-tenant quota) and N14
+> (multi-node coordination) are now config/CLI-driven and exercised in the sim
+> demo (`demo.sh` DC9 / DC8 / DC10). N10 (Redfish) remains a skeleton not wired
+> into the default demo path — it needs a BMC management NIC to exercise live;
+> and N14's live multi-process run still needs a Redis-backed cluster (the demo
+> uses the in-memory store in one process).
 
 This is a clean-room reimplementation of the ideas behind NVIDIA DPS/DPM/PRS.
 The closest commercial equivalent is [Pebble](https://www.gopebble.com) (closed
@@ -262,11 +263,15 @@ demo (`demo.sh` DC8). Design doc: `docs/N13-quota-enforcement.md`.
 
 ## N14 — Multi-node cluster coordinator
 
-**Status**: Redis adapter + IPC bridge implemented
+**Status**: Implemented — proportional rebalancer with a hard `Σ≤budget`
+invariant, a CLI/sim entry point, and a demo (`demo.sh` DC10). Design doc:
+`docs/N14-multinode.md`.
 
 **Deliverables**:
-- `src/opendps/controller/cluster_coordinator.py` — proportional budget rebalancer
-- `InMemoryStore` for testing; `RedisStore` for production (mock-tested, no live Redis required for CI)
+- `src/opendps/controller/cluster_coordinator.py` — proportional budget
+  rebalancer (floor-reserve + proportional surplus + ceiling; never
+  oversubscribes the cluster budget) + `python -m ...cluster_coordinator` CLI
+- `InMemoryStore` for testing/sim; `RedisStore` for production (mock-tested, no live Redis required for CI)
 - `ClusterCoordinator.rebalance()` redistributes based on node draw
 - `src/opendps/controller/agent_bridge.py` — controller→agent IPC skeleton (newline-delimited JSON over TCP; falls back to no-op if agent unreachable)
 - Redis mock tests: `test_redis_store_publish_and_get_all`, `test_redis_store_publish_sets_ttl`
