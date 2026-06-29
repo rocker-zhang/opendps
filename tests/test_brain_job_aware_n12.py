@@ -126,6 +126,38 @@ def test_params_json_negative_priority_boost_rejected(tmp_path):
         main(["--sim", "--brain", "job-prs", "--config", str(topo)])
 
 
+def test_stale_params_priority_boost_ignored_for_non_job_brain(tmp_path, monkeypatch):
+    """A leftover (even negative) priority_boost in params.json must NOT break a
+    non-job-prs brain that never reads it. The run is stopped after one tick."""
+    import json
+
+    from opendps.controller.standalone import StandaloneController, main
+
+    topo = tmp_path / "topo.json"
+    topo.write_text(json.dumps({
+        "pdus": {"p": {"name": "p", "capacity_w": 9000.0, "derating": 0.9}},
+        "domains": {"domain0": {"name": "domain0", "budget_w": 8000.0,
+                                "gpu_indices": [0, 1], "pdu_name": "p", "priority": 0}},
+    }))
+    (tmp_path / "params.json").write_text(json.dumps({"priority_boost": -0.5}))
+
+    # Stop the controller after a single tick instead of looping forever.
+    calls = {"n": 0}
+    real_run_once = StandaloneController.run_once
+
+    def _one_tick(self):
+        calls["n"] += 1
+        real_run_once(self)
+        raise KeyboardInterrupt
+    monkeypatch.setattr(StandaloneController, "run_once", _one_tick)
+
+    try:
+        main(["--sim", "--brain", "prs", "--config", str(topo), "--interval", "0.01"])
+    except KeyboardInterrupt:
+        pass
+    assert calls["n"] == 1  # reached the loop without a parser.error on the stale value
+
+
 def test_priority_boost_rejected_for_non_job_brain(tmp_path):
     """--priority-boost is only meaningful for job-prs; passing it with another
     brain is a clean CLI error, not a silently-ignored flag."""

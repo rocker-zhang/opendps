@@ -440,12 +440,18 @@ def main(argv: list[str] | None = None) -> int:
     params = _load_brain_params(args.config)
     cap_raise_rate = params.get("cap_raise_rate_w_per_tick", args.cap_raise_rate)
     ewma_alpha = params.get("ewma_alpha", args.ewma_alpha)
-    if args.priority_boost is not None and args.brain != "job-prs":
-        parser.error("--priority-boost is only used by --brain job-prs")
-    cli_boost = args.priority_boost if args.priority_boost is not None else 0.15
-    priority_boost = params.get("priority_boost", cli_boost)
-    if priority_boost < 0:
-        parser.error(f"--priority-boost must be >= 0, got {priority_boost}")
+    # priority_boost only applies to job-prs. For other brains, ignore a stale
+    # params.json value (don't validate it — they never read it) but still
+    # reject an explicit --priority-boost as a usage error.
+    if args.brain == "job-prs":
+        cli_boost = args.priority_boost if args.priority_boost is not None else 0.15
+        priority_boost = params.get("priority_boost", cli_boost)
+        if priority_boost < 0:
+            parser.error(f"--priority-boost must be >= 0, got {priority_boost}")
+    else:
+        if args.priority_boost is not None:
+            parser.error("--priority-boost is only used by --brain job-prs")
+        priority_boost = 0.15
 
     if args.actuator == "nvml":
         try:

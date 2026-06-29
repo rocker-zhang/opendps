@@ -65,6 +65,21 @@ tenant_cap_sum() {
   echo "$total"
 }
 
+# Poll a /metrics endpoint until per-GPU cap lines appear (or timeout). Echoes
+# the metrics body. Avoids a fixed sleep that flakes when the controller is slow
+# to publish on a loaded CI runner.
+wait_for_caps() {
+  local url=$1 deadline=$((SECONDS + ${2:-15})) body=""
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    body=$(curl -s "$url" 2>/dev/null || true)
+    if printf '%s\n' "$body" | grep -q '^opendps_gpu_power_cap_watts{'; then
+      printf '%s' "$body"; return 0
+    fi
+    sleep 0.5
+  done
+  printf '%s' "$body"  # last body (possibly empty) — caller validates
+}
+
 # DC1 — single-workstation stack comes up.
 say "DC1: sim stack reachable"
 if curl -sf "$HOST:$PROM_PORT/-/healthy" >/dev/null 2>&1; then
@@ -144,8 +159,7 @@ say "DC8: per-tenant quota enforcement (N13)"
   --quota-config deploy/quota-demo.json --metrics-port 19423 --interval 0.5 >/dev/null 2>&1 &
 Q_PID=$!
 trap 'kill "$Q_PID" 2>/dev/null || true' INT TERM EXIT
-sleep 4
-Q_METRICS=$(curl -s "$HOST:19423/metrics" 2>/dev/null || true)
+Q_METRICS=$(wait_for_caps "$HOST:19423/metrics" 15)
 kill "$Q_PID" 2>/dev/null || true; wait "$Q_PID" 2>/dev/null || true
 trap - INT TERM EXIT
 CAP_A=$(tenant_cap_sum "$Q_METRICS" 0 1 2 3 4 5)
@@ -167,8 +181,7 @@ say "DC9: job-aware priority boost (N12)"
   --busy-gpus 0,1 --priority-boost 0.30 --metrics-port 19424 --interval 0.4 >/dev/null 2>&1 &
 J_PID=$!
 trap 'kill "$J_PID" 2>/dev/null || true' INT TERM EXIT
-sleep 4
-J_METRICS=$(curl -s "$HOST:19424/metrics" 2>/dev/null || true)
+J_METRICS=$(wait_for_caps "$HOST:19424/metrics" 15)
 kill "$J_PID" 2>/dev/null || true; wait "$J_PID" 2>/dev/null || true
 trap - INT TERM EXIT
 BOOSTED=$(tenant_cap_sum "$J_METRICS" 0 1)      # 2 busy/boosted GPUs

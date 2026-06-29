@@ -35,11 +35,11 @@ The boost fraction is configurable (it was previously hardcoded at `0.15`):
 
 ## Demonstration
 
-`scripts/demo.sh` step **DC9** runs `deploy/topology-jobdemo.json` (a
-deliberately tight 3600 W budget over 10 GPUs, so the boost binds rather than
-everyone sitting at hardware max) with `--brain job-prs --busy-gpus 0,1
---priority-boost 0.30`. GPUs 0–5 carry the same load, but only 0 and 1 have an
-active job:
+`scripts/demo.sh` step **DC9** runs the illustrative `deploy/topology-jobdemo.json`
+(a deliberately oversubscribed domain — budget set below the sum of per-GPU
+maxima — so the boost binds rather than everyone sitting at hardware max) with
+`--brain job-prs --busy-gpus 0,1 --priority-boost 0.30`. Several GPUs carry the
+same load, but only the two in `--busy-gpus` have an active job:
 
 ```text
 busy(job) GPU avg cap = ~734 W
