@@ -46,7 +46,7 @@ sim/demo it is the in-memory store within one process.
 ## Demonstration
 
 `scripts/demo.sh` step **DC10** runs the coordinator once over a busy node and
-two idle nodes sharing a cluster budget:
+two low-draw nodes sharing a cluster budget:
 
 ```bash
 python -m opendps.controller.cluster_coordinator --sim \
@@ -54,11 +54,12 @@ python -m opendps.controller.cluster_coordinator --sim \
 ```
 
 ```text
-busy node0 = 7333 W; idle node1 = 2333 W; idle node2 = 2333 W; total = 12000 W
+busy node0 = 7333 W; node1 = 2333 W; node2 = 2333 W; total = 12000 W
 ```
 
-The check asserts the busy node gets the larger share **and** the total never
-exceeds the cluster budget.
+The busy node gets the larger share; the low-draw nodes still sit well above
+their 2000 W floor. The check asserts the busy node gets the larger share **and**
+the total never exceeds the cluster budget.
 
 ## Limitations (not yet wired)
 

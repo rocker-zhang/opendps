@@ -204,10 +204,13 @@ N14_OUT=$(python -m opendps.controller.cluster_coordinator --sim \
 node_budget() { printf '%s\n' "$N14_OUT" | awk -v tag="node=\"$1\"}" '/^opendps_cluster_node_budget_w\{/ && index($0,tag){print $2}'; }
 B0=$(node_budget node0); B1=$(node_budget node1); TOT=$(printf '%s\n' "$N14_OUT" | sed -n 's/.*total_allocated_w=//p')
 if is_num "$B0" && is_num "$B1" && is_num "$TOT"; then
-  printf "  busy node0 = %.0f W; idle node1 = %.0f W; total = %.0f W (budget 12000)\n" "$B0" "$B1" "$TOT"
+  # is_num rejects scientific notation; fine here since Python prints plain
+  # decimals for watt-scale floats (only >~1e15 would format as 1e+15).
+  printf "  busy node0 = %.0f W; node1 = %.0f W; total = %.0f W (budget 12000)\n" "$B0" "$B1" "$TOT"
   if awk "BEGIN{exit !($B0 > $B1)}"; then ok "busy node gets a larger cluster budget share"; else bad "busy node not prioritised: node0=$B0 node1=$B1"; fi
-  # Hard invariant: never oversubscribe the cluster power budget (small float slack).
-  if awk "BEGIN{exit !($TOT <= 12000 + 1)}"; then ok "cluster budget not oversubscribed (Σ<=12000 W)"; else bad "oversubscribed: total=$TOT"; fi
+  # Hard invariant: never oversubscribe the cluster power budget. The algorithm
+  # guarantees Σ==budget exactly bar float epsilon, so the slack is tiny (0.01 W).
+  if awk "BEGIN{exit !($TOT <= 12000 + 0.01)}"; then ok "cluster budget not oversubscribed (Σ<=12000 W)"; else bad "oversubscribed: total=$TOT"; fi
 else
   bad "coordinator produced no node budgets (B0=$B0 B1=$B1 TOT=$TOT)"
 fi

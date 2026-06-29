@@ -1,6 +1,7 @@
 """Multi-node cluster power coordinator (N14 skeleton)."""
 from __future__ import annotations
 import dataclasses
+import math
 import threading
 from typing import Protocol
 
@@ -146,7 +147,14 @@ def _parse_nodes(spec: str) -> list[tuple[str, float]]:
         if "=" not in item:
             raise ValueError(f"bad --nodes entry {item!r}, expected node_id=draw_w")
         nid, draw = item.split("=", 1)
-        nodes.append((nid.strip(), float(draw)))
+        draw_w = float(draw)  # raises ValueError on non-numeric junk
+        # NaN/Inf parse fine via float() but would poison the rebalance math
+        # (NaN budgets, broken Σ≤budget); negative draw is physically impossible.
+        if not math.isfinite(draw_w):
+            raise ValueError(f"draw for {nid.strip()!r} must be finite, got {draw!r}")
+        if draw_w < 0:
+            raise ValueError(f"draw for {nid.strip()!r} must be >= 0, got {draw_w}")
+        nodes.append((nid.strip(), draw_w))
     return nodes
 
 
@@ -168,8 +176,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="one-shot in-memory rebalance over --nodes (the only mode today)")
     args = parser.parse_args(argv)
 
-    if args.cluster_budget_w <= 0:
-        parser.error("--cluster-budget-w must be > 0")
+    # NaN/Inf pass `float()` but break the rebalance math (`nan <= 0` is False),
+    # so reject non-finite budgets too — not just non-positive ones.
+    if not math.isfinite(args.cluster_budget_w) or args.cluster_budget_w <= 0:
+        parser.error("--cluster-budget-w must be a finite number > 0")
     try:
         nodes = _parse_nodes(args.nodes)
     except ValueError as exc:

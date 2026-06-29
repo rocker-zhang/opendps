@@ -121,6 +121,10 @@ def test_rebalance_empty_store():
 
 
 def test_cli_sim_prints_budgets(capsys):
+    import re
+
+    import pytest
+
     from opendps.controller.cluster_coordinator import main
 
     rc = main(["--sim", "--cluster-budget-w", "12000",
@@ -128,7 +132,10 @@ def test_cli_sim_prints_budgets(capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert 'opendps_cluster_node_budget_w{node="node0"}' in out
-    assert "total_allocated_w=12000" in out
+    # Parse the actual total rather than substring-match (12000 ⊂ 120001).
+    m = re.search(r"total_allocated_w=([0-9.eE+-]+)", out)
+    assert m is not None
+    assert float(m.group(1)) == pytest.approx(12000.0, abs=0.01)
 
 
 def test_cli_rejects_bad_args():
@@ -136,7 +143,16 @@ def test_cli_rejects_bad_args():
 
     from opendps.controller.cluster_coordinator import main
 
-    with pytest.raises(SystemExit):
-        main(["--sim", "--cluster-budget-w", "0", "--nodes", "a=1"])
-    with pytest.raises(SystemExit):
-        main(["--sim", "--cluster-budget-w", "100", "--nodes", "bogus_no_equals"])
+    bad = [
+        ["--cluster-budget-w", "0", "--nodes", "a=1"],      # non-positive budget
+        ["--cluster-budget-w", "nan", "--nodes", "a=1"],    # NaN budget
+        ["--cluster-budget-w", "inf", "--nodes", "a=1"],    # Inf budget
+        ["--cluster-budget-w", "100", "--nodes", "bogus"],  # no '='
+        ["--cluster-budget-w", "100", "--nodes", "a=nan"],  # NaN draw
+        ["--cluster-budget-w", "100", "--nodes", "a=inf"],  # Inf draw
+        ["--cluster-budget-w", "100", "--nodes", "a=-5"],   # negative draw
+        ["--cluster-budget-w", "100", "--nodes", "a=xyz"],  # non-numeric
+    ]
+    for argv in bad:
+        with pytest.raises(SystemExit):
+            main(["--sim", *argv])
