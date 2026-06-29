@@ -22,13 +22,14 @@ Achieve functional parity with closed-source NVIDIA DPS across three dimensions:
 | CVXPY optimal-allocation brain (vs EWMA heuristic) | Important | N11 ✅ |
 | Job-awareness (GPU → job mapping via DCGM process info) | Important | N12 ✅ (skeleton) |
 | Production hardening (/healthz, alerting, watchdog, config reload) | Important | N9 ✅ |
-| Per-tenant quota enforcement | Nice | N13 ✅ (QuotaAwarePRSBrain + design doc; unit-tested, not in the default demo path) |
+| Per-tenant quota enforcement | Nice | N13 ✅ (QuotaAwarePRSBrain, config-driven via `--quota-config`; wired into the demo path as `demo.sh` DC8; [design doc](N13-quota-enforcement.md)) |
 | Multi-node cluster coordinator | Nice | N14 ✅ (skeleton: proportional rebalancer + in-memory/mock store; no live multi-node run) |
 
 > Validation depth varies by milestone. N0–N7 are exercised end-to-end (sim +
-> real GPU node). N10 (Redfish), N12 (job-aware), N13 (quota) and N14
-> (multi-node) are implemented and unit-tested but are **skeletons not wired into
-> the default demo path** — they need a BMC NIC, a real scheduler, or a
+> real GPU node); N13 (per-tenant quota) is now config-driven and exercised in
+> the sim demo (`demo.sh` DC8). N10 (Redfish), N12 (job-aware) and N14
+> (multi-node) are implemented and unit-tested but remain **skeletons not wired
+> into the default demo path** — they need a BMC NIC, a real scheduler, or a
 > multi-node cluster to exercise live.
 
 This is a clean-room reimplementation of the ideas behind NVIDIA DPS/DPM/PRS.
@@ -245,12 +246,14 @@ _Phase 2 plan locked: 2026-06-27_
 
 ## N13 — Per-tenant quota enforcement
 
-**Status**: Design doc at `docs/N13-quota-enforcement.md`
+**Status**: Implemented — config-driven (`--quota-config`), exercised in the sim
+demo (`demo.sh` DC8). Design doc: `docs/N13-quota-enforcement.md`.
 
 **Key design**:
-- `PowerQuota(tenant_id, domain_name, max_watts_pct)` stored in k8s ConfigMap
+- `TenantQuota(tenant_id, domain_name, gpu_indices, max_watts_pct)` +
+  `QuotaConfig` (JSON via `--quota-config` / `quota.json` next to the topology)
 - `QuotaAwarePRSBrain` enforces per-tenant budget slices before intra-tenant PRS
-- Two tenants with 60%/40% split receive proportional GPU budgets
+- Two tenants with a 60%/40% split receive proportional GPU budgets
 
 ## N14 — Multi-node cluster coordinator
 

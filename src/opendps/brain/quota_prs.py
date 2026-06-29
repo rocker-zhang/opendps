@@ -20,6 +20,9 @@ class QuotaAwarePRSBrain:
     """
 
     def __init__(self, topology: PDNTopology, quota_config: QuotaConfig, **prs_kwargs):
+        # Fail loudly on an over-100% or overlapping-GPU quota rather than
+        # silently mis-allocating power for the controller's whole lifetime.
+        quota_config.validate()
         self._topo = topology
         self._quota = quota_config
         self._prs_kwargs = prs_kwargs
@@ -39,7 +42,13 @@ class QuotaAwarePRSBrain:
                 continue
 
             tenant_budget = self._quota.tenant_budget_w(tenant, budget)
-            tenant_gpus = [g for g in tenant.gpu_indices if g in state.gpu_draws]
+            # Only GPUs with full telemetry (draw + max cap) can be allocated;
+            # a tenant GPU missing from this tick's state is skipped rather than
+            # crashing the loop. gpu_caps falls back to gpu_max_caps below.
+            tenant_gpus = [
+                g for g in tenant.gpu_indices
+                if g in state.gpu_draws and g in state.gpu_max_caps
+            ]
 
             if not tenant_gpus:
                 continue
@@ -60,7 +69,7 @@ class QuotaAwarePRSBrain:
             sub_state = DomainState(
                 domain_name=sub_domain_name,
                 gpu_draws={g: state.gpu_draws[g] for g in tenant_gpus},
-                gpu_caps={g: state.gpu_caps[g] for g in tenant_gpus},
+                gpu_caps={g: state.gpu_caps.get(g, state.gpu_max_caps[g]) for g in tenant_gpus},
                 gpu_max_caps={g: state.gpu_max_caps[g] for g in tenant_gpus},
                 ts=state.ts,
             )
@@ -70,6 +79,15 @@ class QuotaAwarePRSBrain:
             brain = self._tenant_brains[tenant.tenant_id]
 
             decision = brain.decide(sub_domain_name, sub_state)
+            # PRS's per-GPU idle floor (min_cap_w) can sum above a small tenant
+            # slice, so renormalise the tenant's caps down to its budget. (If the
+            # slice is below the hardware min × GPU count the quota is physically
+            # infeasible and the floor wins — see docs/N13-quota-enforcement.md.)
+            tenant_total = sum(decision.caps.values())
+            if tenant_budget > 0 and tenant_total > tenant_budget:
+                scale = tenant_budget / tenant_total
+                for g in decision.caps:
+                    decision.caps[g] *= scale
             all_caps.update(decision.caps)
             assigned_gpus.update(tenant_gpus)
             used_budget += sum(decision.caps.values())
@@ -80,7 +98,7 @@ class QuotaAwarePRSBrain:
             remaining = max(0.0, budget - used_budget)
             share = remaining / len(unassigned)
             for g in unassigned:
-                all_caps[g] = min(share, state.gpu_max_caps[g])
+                all_caps[g] = min(share, state.gpu_max_caps.get(g, share))
 
         return BrainDecision(
             domain=domain_name,

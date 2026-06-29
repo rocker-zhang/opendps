@@ -42,6 +42,7 @@ from pathlib import Path
 from opendps.brain.dpm import BrainDecision, DPMBrain, DomainState
 from opendps.brain.prs import PRSBrain
 from opendps.pdn.model import PDNTopology, from_dict
+from opendps.pdn.quota import QuotaConfig
 from opendps.sim.protocol import Actuator
 from opendps.telemetry.metrics import start_healthz_server, start_metrics_server, update_decision_metrics
 from opendps.telemetry.prom_client import NodeSampleFromProm, PromClient
@@ -73,6 +74,8 @@ class ControllerConfig:
     # "prom" (default) reads draws from Prometheus; "actuator" reads them
     # directly from the actuator (real NVML node without a telemetry plane).
     telemetry: str = "prom"
+    # N13 — per-tenant quota enforcement (required for --brain quota-prs).
+    quota_config: QuotaConfig | None = None
 
 
 class StandaloneController:
@@ -121,22 +124,22 @@ class StandaloneController:
                 cap_raise_rate_w_per_tick=config.cap_raise_rate_w_per_tick,
             )
         elif config.brain_type == "quota-prs":
-            from opendps.brain.quota_prs import QuotaAwarePRSBrain
-            from opendps.pdn.quota import QuotaConfig, TenantQuota
             from typing import Any
-            # Default: two tenants splitting GPUs 60/40 (override via config file)
-            n = len(list(config.topology.domains.values())[0].gpu_indices)
-            half = n // 2
-            quota = QuotaConfig(
-                domain_name=list(config.topology.domains.keys())[0],
-                tenants=[
-                    TenantQuota("teamA", list(config.topology.domains.keys())[0],
-                                list(range(half)), max_watts_pct=0.6),
-                    TenantQuota("teamB", list(config.topology.domains.keys())[0],
-                                list(range(half, n)), max_watts_pct=0.4),
-                ],
+
+            from opendps.brain.quota_prs import QuotaAwarePRSBrain
+
+            if config.quota_config is None:
+                raise ValueError(
+                    "--brain quota-prs requires a quota config "
+                    "(pass --quota-config FILE or place quota.json next to --config)"
+                )
+            _validate_quota_against_topology(config.quota_config, config.topology)
+            self._brain: Any = QuotaAwarePRSBrain(
+                config.topology,
+                config.quota_config,
+                ewma_alpha=config.ewma_alpha,
+                cap_raise_rate_w_per_tick=config.cap_raise_rate_w_per_tick,
             )
-            self._brain: Any = QuotaAwarePRSBrain(config.topology, quota)
         else:
             self._brain = DPMBrain(config.topology)
         # Only create a PromClient when draws actually come from Prometheus.
@@ -383,6 +386,12 @@ def main(argv: list[str] | None = None) -> int:
         default="prom",
         help="draw source: 'prom' (Prometheus) or 'actuator' (read directly from the actuator, e.g. real NVML node without Prometheus)",
     )
+    parser.add_argument(
+        "--quota-config",
+        default=None,
+        metavar="FILE",
+        help="N13: per-tenant quota JSON for --brain quota-prs (defaults to quota.json next to --config)",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -394,6 +403,18 @@ def main(argv: list[str] | None = None) -> int:
 
     with open(args.config) as fh:
         topology = from_dict(json.load(fh))
+
+    # N13: load the per-tenant quota when quota-prs is selected (or an explicit
+    # file is given). A malformed/absent-but-required file is a hard CLI error
+    # rather than a silent fall-back to no enforcement.
+    if args.quota_config and args.brain != "quota-prs":
+        parser.error("--quota-config is only valid with --brain quota-prs")
+    quota_config = None
+    if args.brain == "quota-prs" or args.quota_config:
+        try:
+            quota_config = _load_quota_config(args.config, args.quota_config)
+        except (ValueError, OSError) as exc:
+            parser.error(str(exc))
 
     # A PowerPolicy-derived params.json (written by the operator into the domain
     # ConfigMap) overrides CLI defaults when present, so a PowerPolicy CR change
@@ -439,6 +460,7 @@ def main(argv: list[str] | None = None) -> int:
         ewma_alpha=ewma_alpha,
         busy_gpus=busy_gpus,
         telemetry=args.telemetry,
+        quota_config=quota_config,
     )
     StandaloneController(cfg).run()
     return 0
@@ -487,6 +509,50 @@ def _load_brain_params(config_path: str) -> dict:
         return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}
+
+
+def _load_quota_config(config_path: str, explicit_path: str | None = None) -> QuotaConfig | None:
+    """Load a per-tenant quota config for ``--brain quota-prs`` (N13).
+
+    Uses ``explicit_path`` when given, else a ``quota.json`` sitting next to the
+    topology config (mirrors the ``params.json`` convention). Returns ``None``
+    when no file is found. Unlike ``params.json``, a *present* but malformed
+    quota file raises ``ValueError`` rather than falling back silently — a bad
+    quota must fail loudly, never quietly degrade to no enforcement.
+    """
+    if explicit_path:
+        path = Path(explicit_path)
+        if not path.exists():
+            raise ValueError(f"--quota-config file not found: {explicit_path}")
+    else:
+        path = Path(config_path).parent / "quota.json"
+        if not path.exists():
+            return None
+    with open(path) as fh:
+        data = json.load(fh)  # JSONDecodeError is a ValueError subclass
+    return QuotaConfig.from_dict(data)
+
+
+def _validate_quota_against_topology(quota: QuotaConfig, topology: PDNTopology) -> None:
+    """Cross-check a quota config against the live topology.
+
+    The quota's domain must exist and every tenant GPU must belong to that
+    domain; an out-of-domain GPU is a config error (the tenant would otherwise
+    be silently under-allocated because the brain skips unknown GPUs).
+    """
+    if quota.domain_name not in topology.domains:
+        raise ValueError(
+            f"quota domain {quota.domain_name!r} not in topology domains "
+            f"{sorted(topology.domains)}"
+        )
+    domain_gpus = set(topology.domains[quota.domain_name].gpu_indices)
+    for t in quota.tenants:
+        stray = sorted(set(t.gpu_indices) - domain_gpus)
+        if stray:
+            raise ValueError(
+                f"tenant {t.tenant_id!r} references GPUs {stray} not in domain "
+                f"{quota.domain_name!r}"
+            )
 
 
 if __name__ == "__main__":
