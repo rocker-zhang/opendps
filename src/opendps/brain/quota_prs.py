@@ -42,13 +42,15 @@ class QuotaAwarePRSBrain:
                 continue
 
             tenant_budget = self._quota.tenant_budget_w(tenant, budget)
-            # Only GPUs with full telemetry (draw + max cap) can be allocated;
-            # a tenant GPU missing from this tick's state is skipped rather than
-            # crashing the loop. gpu_caps falls back to gpu_max_caps below.
-            tenant_gpus = [
-                g for g in tenant.gpu_indices
-                if g in state.gpu_draws and g in state.gpu_max_caps
-            ]
+            # Reserve every GPU the tenant owns that reported a draw this tick,
+            # so a GPU with partial telemetry (a draw but no max cap) can't fall
+            # into the unassigned pool below and draw from leftover *domain*
+            # budget — that would bypass the tenant's slice. Only GPUs with a
+            # known max cap are actually allocated; the rest are skipped for the
+            # tick. gpu_caps falls back to gpu_max_caps below.
+            tenant_present_gpus = [g for g in tenant.gpu_indices if g in state.gpu_draws]
+            assigned_gpus.update(tenant_present_gpus)
+            tenant_gpus = [g for g in tenant_present_gpus if g in state.gpu_max_caps]
 
             if not tenant_gpus:
                 continue
@@ -89,7 +91,6 @@ class QuotaAwarePRSBrain:
                 for g in decision.caps:
                     decision.caps[g] *= scale
             all_caps.update(decision.caps)
-            assigned_gpus.update(tenant_gpus)
             used_budget += sum(decision.caps.values())
 
         # Unassigned GPUs get equal share of remaining budget

@@ -286,3 +286,48 @@ def test_brain_clamps_tenant_to_budget_when_floor_would_exceed():
     decision = brain.decide(DOMAIN, _state({i: 50.0 for i in range(10)}))  # all idle
     tenant_caps = sum(decision.caps[i] for i in range(6))
     assert tenant_caps <= 800.0 + 1.0, f"tenant exceeded its 10% slice: {tenant_caps}"
+
+
+def test_partial_telemetry_gpu_does_not_draw_from_domain_budget():
+    """A tenant GPU with a draw but no max cap must NOT leak into the unassigned
+    pool (which would let it draw from leftover domain budget and bypass the
+    tenant slice). It is reserved to the tenant and skipped for the tick."""
+    topo = _topo(budget=8000.0, n=4)
+    quota = QuotaConfig(domain_name=DOMAIN, tenants=[
+        TenantQuota("a", DOMAIN, [0, 1], max_watts_pct=0.25),  # slice = 2000 W
+    ])
+    brain = QuotaAwarePRSBrain(topo, quota)
+    # GPU 1 has a draw but no max cap -> partial telemetry.
+    state = DomainState(
+        domain_name=DOMAIN,
+        gpu_draws={0: 100.0, 1: 100.0, 2: 100.0, 3: 100.0},
+        gpu_caps={0: 1000.0, 1: 1000.0, 2: 1000.0, 3: 1000.0},
+        gpu_max_caps={0: 1000.0, 2: 1000.0, 3: 1000.0},  # 1 missing
+        ts=time.time(),
+    )
+    decision = brain.decide(DOMAIN, state)
+    # GPU 1 gets no cap this tick (skipped), and is NOT treated as unassigned.
+    assert 1 not in decision.caps
+    # GPU 0 (the tenant's allocatable GPU) is bounded by the 2000 W slice.
+    assert decision.caps[0] <= 2000.0 + 1.0
+    # Unassigned GPUs 2,3 split the remaining domain budget — GPU 1 is excluded.
+    assert 2 in decision.caps and 3 in decision.caps
+
+
+def test_cli_quota_prs_without_config_is_clean_error(tmp_path, capsys):
+    """--brain quota-prs with no resolvable quota config exits via parser.error
+    (SystemExit), not an uncaught ValueError traceback."""
+    import json
+
+    from opendps.controller.standalone import main
+
+    topo = tmp_path / "topo.json"
+    topo.write_text(json.dumps({
+        "pdus": {"p": {"name": "p", "capacity_w": 9000.0, "derating": 0.9}},
+        "domains": {"domain0": {"name": "domain0", "budget_w": 8000.0,
+                                "gpu_indices": [0, 1], "pdu_name": "p", "priority": 0}},
+    }))
+    with pytest.raises(SystemExit):
+        main(["--sim", "--brain", "quota-prs", "--config", str(topo)])
+    err = capsys.readouterr().err
+    assert "quota-prs requires a quota config" in err

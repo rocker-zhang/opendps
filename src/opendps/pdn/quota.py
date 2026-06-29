@@ -53,7 +53,7 @@ class QuotaConfig:
             {
               "domain_name": "dom0",
               "tenants": [
-                {"tenant_id": "teamA", "gpu_indices": [0,1,2], "max_watts_pct": 0.6},
+                {"tenant_id": "tenant-a", "gpu_indices": [0,1,2], "max_watts_pct": 0.6},
                 ...
               ]
             }

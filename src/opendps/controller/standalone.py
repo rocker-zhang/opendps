@@ -415,6 +415,11 @@ def main(argv: list[str] | None = None) -> int:
             quota_config = _load_quota_config(args.config, args.quota_config)
         except (ValueError, OSError) as exc:
             parser.error(str(exc))
+        if args.brain == "quota-prs" and quota_config is None:
+            parser.error(
+                "--brain quota-prs requires a quota config: pass --quota-config FILE "
+                "or place quota.json next to --config"
+            )
 
     # A PowerPolicy-derived params.json (written by the operator into the domain
     # ConfigMap) overrides CLI defaults when present, so a PowerPolicy CR change

@@ -52,8 +52,8 @@ never a silent fall-back to no enforcement.
 {
   "domain_name": "domain0",
   "tenants": [
-    {"tenant_id": "teamA", "gpu_indices": [0, 1, 2, 3, 4, 5], "max_watts_pct": 0.6},
-    {"tenant_id": "teamB", "gpu_indices": [6, 7, 8, 9], "max_watts_pct": 0.4}
+    {"tenant_id": "tenant-a", "gpu_indices": [0, 1, 2, 3, 4, 5], "max_watts_pct": 0.6},
+    {"tenant_id": "tenant-b", "gpu_indices": [6, 7, 8, 9], "max_watts_pct": 0.4}
   ]
 }
 ```
@@ -67,16 +67,17 @@ enum.
 ## Demonstration
 
 `scripts/demo.sh` step **DC8** runs the demo topology (`domain0`, 8000 W, GPUs
-0–9) with the quota above and every GPU busy:
+0–9) with the quota above. In the oversubscribed scenario tenant-a's GPUs are
+busy and tenant-b's are idle:
 
 ```text
-teamA caps = 4800 W (60% slice = 4800)   # pinned to its slice — enforcement binds
-teamB caps =  800 W (40% slice = 3200)   # idle, reclaimed below its ceiling
+tenant-a caps = 4800 W (60% slice = 4800)   # pinned to its slice — enforcement binds
+tenant-b caps =  800 W (40% slice = 3200)   # idle, reclaimed below its ceiling
 ```
 
-teamA, fully busy, is held exactly at its 60% slice; teamB, idle, is reclaimed
+tenant-a, busy, is held exactly at its 60% slice; tenant-b, idle, is reclaimed
 far below its 40% ceiling. The check asserts each tenant's cap sum stays within
-its slice (`Σcaps_A ≤ 4800 W`, `Σcaps_B ≤ 3200 W`).
+its slice (`Σcaps_a ≤ 4800 W`, `Σcaps_b ≤ 3200 W`).
 
 ## Edge cases & limitations
 
