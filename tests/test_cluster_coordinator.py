@@ -152,6 +152,7 @@ def test_cli_rejects_bad_args():
         ["--cluster-budget-w", "100", "--nodes", "a=inf"],  # Inf draw
         ["--cluster-budget-w", "100", "--nodes", "a=-5"],   # negative draw
         ["--cluster-budget-w", "100", "--nodes", "a=xyz"],  # non-numeric
+        ["--cluster-budget-w", "100", "--nodes", "=123"],   # empty node id
     ]
     for argv in bad:
         with pytest.raises(SystemExit):

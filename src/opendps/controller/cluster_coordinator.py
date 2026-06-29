@@ -147,14 +147,17 @@ def _parse_nodes(spec: str) -> list[tuple[str, float]]:
         if "=" not in item:
             raise ValueError(f"bad --nodes entry {item!r}, expected node_id=draw_w")
         nid, draw = item.split("=", 1)
+        nid = nid.strip()
+        if not nid:
+            raise ValueError(f"empty node id in --nodes entry {item!r}")
         draw_w = float(draw)  # raises ValueError on non-numeric junk
         # NaN/Inf parse fine via float() but would poison the rebalance math
         # (NaN budgets, broken Σ≤budget); negative draw is physically impossible.
         if not math.isfinite(draw_w):
-            raise ValueError(f"draw for {nid.strip()!r} must be finite, got {draw!r}")
+            raise ValueError(f"draw for {nid!r} must be finite, got {draw!r}")
         if draw_w < 0:
-            raise ValueError(f"draw for {nid.strip()!r} must be >= 0, got {draw_w}")
-        nodes.append((nid.strip(), draw_w))
+            raise ValueError(f"draw for {nid!r} must be >= 0, got {draw_w}")
+        nodes.append((nid, draw_w))
     return nodes
 
 
