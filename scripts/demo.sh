@@ -158,6 +158,30 @@ else
   bad "quota-prs exported no per-GPU cap metrics (A=$CAP_A B=$CAP_B)"
 fi
 
+# DC9 — N12 job-aware priority boost. GPUs 0,1 carry the same load as 2-5 but
+# are marked busy (active job), so --priority-boost lifts their caps above the
+# equally-loaded no-job GPUs. A tight budget (topology-jobdemo) makes the boost
+# bind instead of everyone sitting at hardware max.
+say "DC9: job-aware priority boost (N12)"
+"${CTL[@]}" --sim --brain job-prs --config deploy/topology-jobdemo.json \
+  --busy-gpus 0,1 --priority-boost 0.30 --metrics-port 19424 --interval 0.4 >/dev/null 2>&1 &
+J_PID=$!
+trap 'kill "$J_PID" 2>/dev/null || true' INT TERM EXIT
+sleep 4
+J_METRICS=$(curl -s "$HOST:19424/metrics" 2>/dev/null || true)
+kill "$J_PID" 2>/dev/null || true; wait "$J_PID" 2>/dev/null || true
+trap - INT TERM EXIT
+BOOSTED=$(tenant_cap_sum "$J_METRICS" 0 1)      # 2 busy/boosted GPUs
+PLAIN=$(tenant_cap_sum "$J_METRICS" 2 3 4 5)    # 4 equally-loaded GPUs, no job
+if is_num "$BOOSTED" && is_num "$PLAIN" && awk "BEGIN{exit !($BOOSTED>0 && $PLAIN>0)}"; then
+  printf "  busy(job) GPU avg cap = %.0f W; no-job GPU avg cap = %.0f W\n" \
+    "$(awk "BEGIN{print $BOOSTED/2}")" "$(awk "BEGIN{print $PLAIN/4}")"
+  # Compare raw float sums (boosted/2 vs plain/4) to avoid printf rounding at the boundary.
+  if awk "BEGIN{exit !($BOOSTED/2 > ($PLAIN/4) * 1.1)}"; then ok "job GPUs boosted above equally-loaded GPUs (>10%)"; else bad "no boost: busy_sum=$BOOSTED plain_sum=$PLAIN"; fi
+else
+  bad "job-prs exported no per-GPU cap metrics (busy=$BOOSTED plain=$PLAIN)"
+fi
+
 # DC4 — real GPU failsafe latency (hardware-gated).
 say "DC4: real-GPU failsafe latency"
 gate "requires a cap-capable GPU node (A10/B300/GB200) — run scripts/hw_failsafe.sh there"

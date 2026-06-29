@@ -71,6 +71,8 @@ class ControllerConfig:
     ewma_alpha: float = 0.3
     # N6 — sim/demo: GPUs to mark busy for job-prs without nvidia-smi
     busy_gpus: list[int] = field(default_factory=list)
+    # N12 — fractional cap boost applied to GPUs with active jobs (job-prs).
+    priority_boost: float = 0.15
     # "prom" (default) reads draws from Prometheus; "actuator" reads them
     # directly from the actuator (real NVML node without a telemetry plane).
     telemetry: str = "prom"
@@ -120,6 +122,7 @@ class StandaloneController:
             self._brain: Any = JobAwarePRSBrain(
                 config.topology,
                 tracker,
+                priority_boost=config.priority_boost,
                 ewma_alpha=config.ewma_alpha,
                 cap_raise_rate_w_per_tick=config.cap_raise_rate_w_per_tick,
             )
@@ -381,6 +384,13 @@ def main(argv: list[str] | None = None) -> int:
         help="N6: comma-separated GPU indices to mark busy for --brain job-prs in sim (no nvidia-smi)",
     )
     parser.add_argument(
+        "--priority-boost",
+        type=float,
+        default=None,
+        metavar="FRAC",
+        help="N12: fractional cap boost for GPUs with active jobs under --brain job-prs (default 0.15 = +15%%)",
+    )
+    parser.add_argument(
         "--telemetry",
         choices=["prom", "actuator"],
         default="prom",
@@ -430,6 +440,12 @@ def main(argv: list[str] | None = None) -> int:
     params = _load_brain_params(args.config)
     cap_raise_rate = params.get("cap_raise_rate_w_per_tick", args.cap_raise_rate)
     ewma_alpha = params.get("ewma_alpha", args.ewma_alpha)
+    if args.priority_boost is not None and args.brain != "job-prs":
+        parser.error("--priority-boost is only used by --brain job-prs")
+    cli_boost = args.priority_boost if args.priority_boost is not None else 0.15
+    priority_boost = params.get("priority_boost", cli_boost)
+    if priority_boost < 0:
+        parser.error(f"--priority-boost must be >= 0, got {priority_boost}")
 
     if args.actuator == "nvml":
         try:
@@ -464,6 +480,7 @@ def main(argv: list[str] | None = None) -> int:
         cap_raise_rate_w_per_tick=cap_raise_rate,
         ewma_alpha=ewma_alpha,
         busy_gpus=busy_gpus,
+        priority_boost=priority_boost,
         telemetry=args.telemetry,
         quota_config=quota_config,
     )

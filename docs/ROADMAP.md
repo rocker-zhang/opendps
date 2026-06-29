@@ -20,16 +20,16 @@ Achieve functional parity with closed-source NVIDIA DPS across three dimensions:
 | NVSwitch + CPU overhead in PDN model | Critical | N9 ✅ |
 | Redfish client (NVLink Switch chassis, PDU rails) | Important | N10 ✅ (skeleton — needs BMC NIC) |
 | CVXPY optimal-allocation brain (vs EWMA heuristic) | Important | N11 ✅ |
-| Job-awareness (GPU → job mapping via DCGM process info) | Important | N12 ✅ (skeleton) |
+| Job-awareness (GPU → job mapping via `nvidia-smi --query-compute-apps`) | Important | N12 ✅ (configurable `--priority-boost`; wired into the demo path as `demo.sh` DC9; [design doc](N12-job-awareness.md)) |
 | Production hardening (/healthz, alerting, watchdog, config reload) | Important | N9 ✅ |
 | Per-tenant quota enforcement | Nice | N13 ✅ (QuotaAwarePRSBrain, config-driven via `--quota-config`; wired into the demo path as `demo.sh` DC8; [design doc](N13-quota-enforcement.md)) |
 | Multi-node cluster coordinator | Nice | N14 ✅ (skeleton: proportional rebalancer + in-memory/mock store; no live multi-node run) |
 
 > Validation depth varies by milestone. N0–N7 are exercised end-to-end (sim +
-> real GPU node); N13 (per-tenant quota) is now config-driven and exercised in
-> the sim demo (`demo.sh` DC8). N10 (Redfish), N12 (job-aware) and N14
-> (multi-node) are implemented and unit-tested but remain **skeletons not wired
-> into the default demo path** — they need a BMC NIC, a real scheduler, or a
+> real GPU node); N12 (job-aware boost) and N13 (per-tenant quota) are now
+> config-driven and exercised in the sim demo (`demo.sh` DC9 / DC8). N10
+> (Redfish) and N14 (multi-node) are implemented and unit-tested but remain
+> **skeletons not wired into the default demo path** — they need a BMC NIC or a
 > multi-node cluster to exercise live.
 
 This is a clean-room reimplementation of the ideas behind NVIDIA DPS/DPM/PRS.
@@ -235,14 +235,19 @@ _Phase 2 plan locked: 2026-06-27_
 
 ## N12 — Job-awareness (nvidia-smi process tracking)
 
-**Status**: Skeleton implemented
+**Status**: Implemented — configurable boost (`--priority-boost` / `params.json`),
+exercised in the sim demo (`demo.sh` DC9). Design doc:
+`docs/N12-job-awareness.md`.
 
 **Deliverables**:
 - `src/opendps/agent/job_tracker.py` — `JobTracker` polls nvidia-smi
-- `src/opendps/brain/job_aware_prs.py` — priority boost for GPUs with active jobs
-- `--brain job-prs` in StandaloneController
+- `src/opendps/brain/job_aware_prs.py` — configurable priority boost for GPUs
+  with active jobs (renormalised to the domain budget)
+- `--brain job-prs` + `--priority-boost FRAC` in StandaloneController
 
-**Done-when**: GPU with active CUDA process receives >=15% cap boost vs idle GPU.
+**Done-when**: GPU with active CUDA process receives a configurable cap boost vs
+an equally-loaded idle-job GPU. ✅ (DC9 asserts the busy GPUs are capped clearly
+above equally-loaded no-job GPUs.)
 
 ## N13 — Per-tenant quota enforcement
 
