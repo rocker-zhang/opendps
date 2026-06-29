@@ -26,8 +26,11 @@ class QuotaAwarePRSBrain:
         self._topo = topology
         self._quota = quota_config
         self._prs_kwargs = prs_kwargs
-        # One PRSBrain per tenant (each has its own EWMA state)
-        self._tenant_brains: dict[str, PRSBrain] = {}
+        # One PRSBrain per (tenant, active GPU set), each with its own EWMA
+        # state. Keying on the GPU set too means a telemetry change (a GPU's
+        # max-cap dropping out or recovering) rebuilds the sub-topology instead
+        # of reusing a stale one.
+        self._tenant_brains: dict[tuple[str, tuple[int, ...]], PRSBrain] = {}
 
     def decide(self, domain_name: str, state: DomainState) -> BrainDecision:
         domain = self._topo.domains[domain_name]
@@ -76,9 +79,10 @@ class QuotaAwarePRSBrain:
                 ts=state.ts,
             )
 
-            if tenant.tenant_id not in self._tenant_brains:
-                self._tenant_brains[tenant.tenant_id] = PRSBrain(sub_topo, **self._prs_kwargs)
-            brain = self._tenant_brains[tenant.tenant_id]
+            brain_key = (tenant.tenant_id, tuple(tenant_gpus))
+            if brain_key not in self._tenant_brains:
+                self._tenant_brains[brain_key] = PRSBrain(sub_topo, **self._prs_kwargs)
+            brain = self._tenant_brains[brain_key]
 
             decision = brain.decide(sub_domain_name, sub_state)
             # PRS's per-GPU idle floor (min_cap_w) can sum above a small tenant

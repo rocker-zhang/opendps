@@ -331,3 +331,29 @@ def test_cli_quota_prs_without_config_is_clean_error(tmp_path, capsys):
         main(["--sim", "--brain", "quota-prs", "--config", str(topo)])
     err = capsys.readouterr().err
     assert "quota-prs requires a quota config" in err
+
+
+def test_tenant_brain_cache_keyed_by_gpu_set():
+    """When a tenant's active GPU set changes between ticks (telemetry gap), the
+    brain rebuilds its sub-PRS instead of reusing a stale sub-topology."""
+    topo = _topo(budget=8000.0, n=4)
+    quota = QuotaConfig(domain_name=DOMAIN, tenants=[
+        TenantQuota("a", DOMAIN, [0, 1], max_watts_pct=0.5),
+    ])
+    brain = QuotaAwarePRSBrain(topo, quota)
+
+    full = DomainState(
+        domain_name=DOMAIN, gpu_draws={0: 100.0, 1: 100.0},
+        gpu_caps={0: 1000.0, 1: 1000.0}, gpu_max_caps={0: 1000.0, 1: 1000.0},
+        ts=time.time())
+    brain.decide(DOMAIN, full)
+    # GPU 1 loses its max cap -> active set shrinks to {0}.
+    partial = DomainState(
+        domain_name=DOMAIN, gpu_draws={0: 100.0, 1: 100.0},
+        gpu_caps={0: 1000.0, 1: 1000.0}, gpu_max_caps={0: 1000.0},
+        ts=time.time())
+    brain.decide(DOMAIN, partial)
+
+    keys = set(brain._tenant_brains)
+    assert ("a", (0, 1)) in keys
+    assert ("a", (0,)) in keys  # distinct cache entry for the changed GPU set
