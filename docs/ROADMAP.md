@@ -347,3 +347,19 @@ behaviour is unchanged when no rack is set. Design doc: `docs/N17-rack-tier.md`.
 **Done-when**: with a rack budget below the sum of its domains' budgets, total
 caps across the rack stay within the rack budget through the live loop. ✅
 (`tests/test_rack_n17.py`, incl. an end-to-end controller run)
+
+## N19 — Per-node budget adoption
+
+**Status**: Implemented.
+
+Closes the N14 gap where the coordinator computed per-node budgets that nothing
+consumed. `ClusterCoordinator.rebalance()` now publishes each node/domain budget
+into the store (`set_adopted_budget`, on `InMemoryStore` + `RedisStore`); a
+`StandaloneController` linked to the store (`node_state_store` + `node_id`)
+adopts its node's budget each tick via `PDNTopology.adopt_budget()`, so every
+brain sizes caps against it. Absent / implausibly small budgets fall back to the
+topology budget. Design doc: `docs/N19-budget-adoption.md`.
+
+**Done-when**: a controller's total caps track the coordinator-published budget
+(larger budget raises caps; low budget binds below it). ✅
+(`tests/test_cluster_coordinator.py`)

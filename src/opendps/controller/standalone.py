@@ -42,6 +42,7 @@ from pathlib import Path
 
 from opendps.brain.dpm import BrainDecision, DPMBrain, DomainState
 from opendps.brain.prs import PRSBrain
+from opendps.controller.cluster_coordinator import NodeStateStore
 from opendps.pdn.model import PDNTopology, from_dict
 from opendps.pdn.quota import QuotaConfig
 from opendps.sim.protocol import Actuator
@@ -85,6 +86,11 @@ class ControllerConfig:
     # real: temperature (C) at/above which a GPU counts as thermal-throttling.
     thermal_throttled_gpus: list[int] = field(default_factory=list)
     thermal_throttle_temp_c: float = 85.0
+    # Per-node budget adoption: when a cluster coordinator store is linked, this
+    # controller adopts the budget the coordinator published for its node.
+    node_state_store: NodeStateStore | None = None
+    node_id: str = "node0"
+    adopted_budget_min_w: float = 100.0  # ignore implausibly small adopted budgets
 
 
 class StandaloneController:
@@ -216,11 +222,25 @@ class StandaloneController:
 
         for domain_name in self._managed_domains:
             domain = self._config.topology.domains[domain_name]
+
+            # Adopt a coordinator-published budget for this node/domain, if any.
+            # An absent or implausibly small budget falls back to the topology.
+            if self._config.node_state_store is not None:
+                adopted = self._config.node_state_store.get_adopted_budget(
+                    self._config.node_id, domain_name
+                )
+                if adopted is not None and adopted >= self._config.adopted_budget_min_w:
+                    self._config.topology.adopt_budget(domain_name, adopted)
+                else:
+                    self._config.topology.release_budget(domain_name)
+
             gpu_draws: dict[int, float] = {}
             gpu_caps: dict[int, float] = {}
             gpu_max_caps: dict[int, float] = {}
 
-            fallback_cap = domain.budget_w / max(len(domain.gpu_indices), 1)
+            fallback_cap = self._config.topology.domain_budget_w(domain_name) / max(
+                len(domain.gpu_indices), 1
+            )
 
             for idx in domain.gpu_indices:
                 if read_actuator:
