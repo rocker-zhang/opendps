@@ -39,7 +39,10 @@ class ThermalAwarePRSBrain:
             # Derate from whichever is lower — the PRS proposal or the cap the GPU
             # currently holds — so a throttled GPU is never raised, only backed off.
             base = min(caps[g], state.gpu_caps.get(g, caps[g]))
-            reduced = max(self._min_cap_w, base * (1.0 - self._derate))
+            # Back off toward the floor, but never above `base` (a GPU already
+            # below the floor must not be raised to it — the "never raised"
+            # contract wins over the floor).
+            reduced = min(base, max(self._min_cap_w, base * (1.0 - self._derate)))
             freed += caps[g] - reduced
             caps[g] = reduced
 

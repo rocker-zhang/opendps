@@ -35,6 +35,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -480,6 +481,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--hot-gpus must be a comma-separated list of GPU indices")
     if hot_gpus and not args.sim:
         parser.error("--hot-gpus is a sim/demo-only override; use it with --sim")
+    if not math.isfinite(args.thermal_throttle_temp_c) or args.thermal_throttle_temp_c <= 0:
+        parser.error("--thermal-throttle-temp-c must be a finite positive number")
 
     with open(args.config) as fh:
         topology = from_dict(json.load(fh))

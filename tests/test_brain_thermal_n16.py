@@ -127,3 +127,34 @@ def test_throttled_gpu_never_raised_above_current():
     )
     d = _brain(budget=2000.0).decide(DOMAIN, state)
     assert d.caps[0] <= 300.0 + 1e-6, f"throttled GPU raised above its current cap: {d.caps[0]}"
+
+
+def test_throttled_gpu_below_floor_not_raised():
+    """A throttled GPU already below min_cap_w must not be raised to the floor."""
+    state = DomainState(
+        domain_name=DOMAIN,
+        gpu_draws={0: 100.0, 1: 100.0},
+        gpu_caps={0: 150.0, 1: 800.0},      # GPU0 below the 200 W floor
+        gpu_max_caps={0: 1000.0, 1: 1000.0},
+        ts=time.time(),
+        gpu_thermal_throttled={0: True},
+    )
+    d = _brain(budget=2000.0).decide(DOMAIN, state)
+    assert d.caps[0] <= 150.0 + 1e-6, f"throttled sub-floor GPU was raised: {d.caps[0]}"
+
+
+def test_cli_rejects_bad_thermal_temp(tmp_path):
+    import json
+
+    from opendps.controller.standalone import main
+
+    topo = tmp_path / "topo.json"
+    topo.write_text(json.dumps({
+        "pdus": {"p": {"name": "p", "capacity_w": 9000.0, "derating": 0.9}},
+        "domains": {"domain0": {"name": "domain0", "budget_w": 8000.0,
+                                "gpu_indices": [0, 1], "pdu_name": "p", "priority": 0}},
+    }))
+    for bad in ("nan", "inf", "0", "-5"):
+        with pytest.raises(SystemExit):
+            main(["--sim", "--brain", "thermal-prs", "--config", str(topo),
+                  "--thermal-throttle-temp-c", bad])
