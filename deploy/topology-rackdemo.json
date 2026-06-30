@@ -1,0 +1,23 @@
+{
+  "pdus": {
+    "pdu-a": {"name": "pdu-a", "capacity_w": 6000.0, "derating": 0.9},
+    "pdu-b": {"name": "pdu-b", "capacity_w": 6000.0, "derating": 0.9}
+  },
+  "racks": {
+    "rack-0": {"budget_w": 6000.0}
+  },
+  "domains": {
+    "domain-a": {
+      "budget_w": 5000.0,
+      "gpu_indices": [0, 1, 2, 3, 4],
+      "pdu_name": "pdu-a",
+      "rack_name": "rack-0"
+    },
+    "domain-b": {
+      "budget_w": 5000.0,
+      "gpu_indices": [5, 6, 7, 8, 9],
+      "pdu_name": "pdu-b",
+      "rack_name": "rack-0"
+    }
+  }
+}

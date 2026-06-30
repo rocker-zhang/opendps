@@ -331,3 +331,19 @@ budget. `NodeSampleFromProm` now also queries `DCGM_FI_DEV_GPU_TEMP`. Design doc
 
 **Done-when**: a thermal-throttled GPU is capped below an equally-hot
 non-throttled peer. ✅ (`demo.sh` DC12; `tests/test_brain_thermal_n16.py`)
+
+## N17 — Rack-level power budget cascade
+
+**Status**: Implemented.
+
+Adds a `Rack` tier between PDU and cluster. A domain's `rack_name` ties it to a
+rack budget; when that budget is below the sum of the rack's domain budgets,
+`domain_budget_w()` scales each domain to its proportional share — so every brain
+(all of which go through `domain_budget_w`) keeps the sum of GPU budgets across
+the rack within the rack budget. `validate_allocation()` gains a rack rollup;
+`from_dict` parses an optional `racks` section (and `node_overhead_w`). Default
+behaviour is unchanged when no rack is set. Design doc: `docs/N17-rack-tier.md`.
+
+**Done-when**: with a rack budget below the sum of its domains' budgets, total
+caps across the rack stay within the rack budget through the live loop. ✅
+(`tests/test_rack_n17.py`, incl. an end-to-end controller run)
