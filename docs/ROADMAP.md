@@ -317,3 +317,17 @@ cap while every GPU keeps a floor and `Σcaps ≤ budget`. Design doc:
 
 **Done-when**: under equal load and budget pressure, a higher-tier GPU is capped
 above a lower-tier one. ✅ (`demo.sh` DC11; `tests/test_brain_priority_n15.py`)
+
+## N16 — Thermal-aware control
+
+**Status**: Implemented.
+
+The DCGM throttle/temperature signals were collected but no brain read them.
+N16 adds `ThermalAwarePRSBrain` (`--brain thermal-prs`): a thermal-throttled GPU
+(temperature ≥ `--thermal-throttle-temp-c`, or `--hot-gpus` in sim) has its cap
+derated and the freed watts handed to GPUs that can use them, never exceeding the
+budget. `NodeSampleFromProm` now also queries `DCGM_FI_DEV_GPU_TEMP`. Design doc:
+`docs/N16-thermal-aware.md`.
+
+**Done-when**: a thermal-throttled GPU is capped below an equally-hot
+non-throttled peer. ✅ (`demo.sh` DC12; `tests/test_brain_thermal_n16.py`)

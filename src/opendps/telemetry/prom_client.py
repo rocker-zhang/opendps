@@ -52,12 +52,13 @@ def _parse_matrix(data: dict) -> list[dict[str, Any]]:
 
 
 def NodeSampleFromProm(client: PromClient, hostname: str | None = None) -> NodeSample:
-    """Query 4 DCGM metrics and build a NodeSample. Uses hostname label to filter
+    """Query 5 DCGM metrics and build a NodeSample. Uses hostname label to filter
     when multiple nodes export to the same Prometheus."""
     power_rows = client.query("DCGM_FI_DEV_POWER_USAGE")
     cap_rows = client.query("DCGM_FI_DEV_POWER_CAP")
     clock_rows = client.query("DCGM_FI_DEV_SM_CLOCK")
     util_rows = client.query("DCGM_FI_DEV_GPU_UTIL")
+    temp_rows = client.query("DCGM_FI_DEV_GPU_TEMP")  # N16 — thermal signal
 
     def _index(rows: list[dict], hn_filter: str | None) -> dict[str, float]:
         out: dict[str, float] = {}
@@ -71,6 +72,7 @@ def NodeSampleFromProm(client: PromClient, hostname: str | None = None) -> NodeS
     power_cap = _index(cap_rows, hostname)
     sm_clocks = _index(clock_rows, hostname)
     util = _index(util_rows, hostname)
+    temps = _index(temp_rows, hostname)
 
     resolved_hostname = hostname or "unknown"
     model_name = "unknown"
@@ -81,7 +83,7 @@ def NodeSampleFromProm(client: PromClient, hostname: str | None = None) -> NodeS
             break
 
     all_gpus = sorted(
-        set(power_draw) | set(power_cap) | set(sm_clocks) | set(util),
+        set(power_draw) | set(power_cap) | set(sm_clocks) | set(util) | set(temps),
         key=lambda x: int(x),
     )
 
@@ -93,6 +95,7 @@ def NodeSampleFromProm(client: PromClient, hostname: str | None = None) -> NodeS
             power_limit_w=power_cap.get(gpu_idx),
             sm_clock_mhz=int(sm_clocks[gpu_idx]) if gpu_idx in sm_clocks else None,
             gpu_util_pct=int(util[gpu_idx]) if gpu_idx in util else None,
+            temperature_c=int(temps[gpu_idx]) if gpu_idx in temps else None,
         )
         for gpu_idx in all_gpus
     ]
