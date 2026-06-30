@@ -226,9 +226,18 @@ class StandaloneController:
             # Adopt a coordinator-published budget for this node/domain, if any.
             # An absent or implausibly small budget falls back to the topology.
             if self._config.node_state_store is not None:
-                adopted = self._config.node_state_store.get_adopted_budget(
-                    self._config.node_id, domain_name
-                )
+                try:
+                    adopted = self._config.node_state_store.get_adopted_budget(
+                        self._config.node_id, domain_name
+                    )
+                except Exception:
+                    # Fail open: a store read error must not skip cap calculation
+                    # for this (and later) domains — fall back to the topology budget.
+                    log.warning(
+                        "adopted-budget read failed for %s/%s; using topology budget",
+                        self._config.node_id, domain_name, exc_info=True,
+                    )
+                    adopted = None
                 if adopted is not None and adopted >= self._config.adopted_budget_min_w:
                     self._config.topology.adopt_budget(domain_name, adopted)
                 else:

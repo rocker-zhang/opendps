@@ -43,5 +43,6 @@ no adopted budget. This closes the N14 "per-node budget adoption" limitation.
 
 - Live multi-process still needs the Redis store and a node-side publisher loop;
   the demo exercises the in-memory store in one process.
-- The controller adopts a single node-level budget; mapping multiple domains per
-  node to sub-budgets is future work.
+- Budgets are published per node/domain key; the publish is batched after the
+  full rebalance but is not a single atomic store transaction (a Redis MULTI /
+  epoch marker would close the last small window).

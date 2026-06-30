@@ -153,10 +153,11 @@ class ClusterCoordinator:
         new_budgets: dict[str, float] = {}
         for s in states:
             extra = (s.draw_w / total_draw) * surplus
-            budget = min(floor + extra, ceil)
-            new_budgets[s.node_id] = budget
-            # Publish the rebalanced budget so the node's controller can adopt it.
-            self._store.set_adopted_budget(s.node_id, s.domain_name, budget)
+            new_budgets[s.node_id] = min(floor + extra, ceil)
+        # Publish only after the full set is computed, so a failure while
+        # computing can't leave controllers split across old and new budgets.
+        for s in states:
+            self._store.set_adopted_budget(s.node_id, s.domain_name, new_budgets[s.node_id])
         with self._lock:
             self._node_budgets = dict(new_budgets)
         return new_budgets

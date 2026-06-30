@@ -101,8 +101,9 @@ class PDNTopology:
     ) -> bool:
         domain = self.domains[domain_name]
         proposed_total = sum(proposed_caps.values())
-        # GPU caps must fit the budget left for GPUs after node overhead (N18).
-        if proposed_total > domain.available_gpu_budget_w:
+        # GPU caps must fit the effective budget — overhead-adjusted, and after
+        # any rack scaling or coordinator-adopted override (domain_budget_w).
+        if proposed_total > self.domain_budget_w(domain_name):
             return False
 
         pdu = self.pdus[domain.pdu_name]

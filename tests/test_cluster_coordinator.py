@@ -234,3 +234,39 @@ def test_unknown_node_returns_no_adopted_budget():
     store = InMemoryStore()
     store.set_adopted_budget("nodeA", "dom0", 4000.0)
     assert store.get_adopted_budget("nodeZ", "dom0") is None
+
+
+def test_validate_allocation_uses_adopted_budget():
+    from opendps.pdn.model import PDU, PDNTopology, PowerDomain
+    topo = PDNTopology(
+        pdus={"p": PDU("p", 100000.0, 1.0)},
+        domains={"d": PowerDomain("d", 8000.0, [0, 1, 2, 3], "p")},
+    )
+    assert topo.validate_allocation("d", {i: 2000.0 for i in range(4)}) is True  # 8000 == budget
+    topo.adopt_budget("d", 4000.0)  # coordinator hands down a smaller budget
+    assert topo.validate_allocation("d", {i: 2000.0 for i in range(4)}) is False  # 8000 > 4000
+    assert topo.validate_allocation("d", {i: 1000.0 for i in range(4)}) is True   # 4000 fits
+
+
+def test_controller_fails_open_on_store_error():
+    """A store read that raises must not abort the tick — fall back to topology."""
+    from opendps.controller.standalone import ControllerConfig, StandaloneController
+    from opendps.pdn.presets import demo_single_domain
+    from opendps.sim.presets import oversub_scenario
+
+    class BadStore:
+        def publish(self, s): ...
+        def get_all(self): return []
+        def set_adopted_budget(self, *a): ...
+        def get_adopted_budget(self, *a):
+            raise RuntimeError("store unavailable")
+
+    cfg = ControllerConfig(
+        topology=demo_single_domain(n_gpus=8, budget_w=8000.0),
+        actuator=oversub_scenario(n_gpus=8),
+        sim_mode=True, brain_type="prs", metrics_port=None, actuator_type="sim",
+        node_state_store=BadStore(), node_id="nodeA",
+    )
+    ctl = StandaloneController(cfg)
+    last = ctl.run_once()  # must not raise
+    assert last and sum(last[0].caps.values()) > 0
