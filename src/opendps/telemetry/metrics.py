@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import threading
 
-from prometheus_client import Gauge, start_http_server
+from prometheus_client import Counter, Gauge, start_http_server
 
 _STRANDED = Gauge(
     "opendps_idle_stranded_watts",
@@ -66,6 +66,17 @@ _FAILSAFE_TRIPS = Gauge(
     "Cumulative number of failsafe emergency cap trips",
     ["domain"],
 )
+_TENANT_ENERGY = Counter(
+    "opendps_tenant_energy_kwh_total",
+    "Cumulative per-tenant energy consumption (kWh) for showback",
+    ["domain", "tenant"],
+)
+
+
+def add_tenant_energy_kwh(domain: str, tenant: str, delta_kwh: float) -> None:
+    """Increment a tenant's cumulative energy counter by this tick's kWh."""
+    if delta_kwh > 0:
+        _TENANT_ENERGY.labels(domain=domain, tenant=tenant).inc(delta_kwh)
 
 
 def start_metrics_server(port: int) -> None:

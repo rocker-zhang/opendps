@@ -363,3 +363,18 @@ topology budget. Design doc: `docs/N19-budget-adoption.md`.
 **Done-when**: a controller's total caps track the coordinator-published budget
 (larger budget raises caps; low budget binds below it). ✅
 (`tests/test_cluster_coordinator.py`)
+
+## N20 — Energy accounting & per-tenant showback
+
+**Status**: Implemented.
+
+opendps exported only instantaneous power gauges. N20 adds `EnergyAccountant`
+(integrates `draw × dt` joules per GPU each tick) and per-tenant attribution via
+the existing `QuotaConfig`: a Prometheus counter
+`opendps_tenant_energy_kwh_total{domain,tenant}` and
+`StandaloneController.energy_showback()` (cumulative per-tenant kWh). Accounting
+runs per GPU regardless; showback is empty without a quota config. Design doc:
+`docs/N20-energy-showback.md`.
+
+**Done-when**: per-tenant cumulative kWh is attributed and a busy tenant accrues
+more than an idle one. ✅ (`tests/test_energy_n20.py`)
