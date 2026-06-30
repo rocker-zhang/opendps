@@ -211,7 +211,8 @@ _Phase 2 plan locked: 2026-06-27_
 - `/healthz` endpoint in `opendps/telemetry/metrics.py` on `metrics_port + 1`
 - `deploy/alerting.yml` — PowerDomainOverBudget, FailsafeTripRateHigh, IdleStrandedWattsHigh
 - Grafana panels 10-13: per-GPU draw, cap vs draw, DCGM field 160 stat, failsafe trips
-- `PowerDomain.node_overhead_w` + `available_gpu_budget_w` property
+- `PowerDomain.node_overhead_w` + `available_gpu_budget_w` property (the field
+  landed here; the control-loop wiring is N18)
 
 ## N10 — Redfish chassis power client
 
@@ -279,3 +280,26 @@ invariant, a CLI/sim entry point, and a demo (`demo.sh` DC10). Design doc:
 
 **Full Redis integration**: `pip install ".[redis]"` + running Redis instance required for live use.
 **Agent IPC**: `AgentBridge` connects to Rust opendps-agent on `127.0.0.1:9500` (future N4+ work).
+
+---
+
+# Phase 4 — closed-source parity (N15+)
+
+Candidates from the feature-parity analysis (closed-source NVIDIA datacenter GPU
+DPM vs opendps). Built in priority order, each sim-validated.
+
+## N18 — Node overhead wired into the GPU budget
+
+**Status**: Implemented.
+
+The N9 model already had `PowerDomain.node_overhead_w` +
+`available_gpu_budget_w`, but every brain allocated against the raw `budget_w`,
+so CPU/NVSwitch/memory overhead was never reserved. N18 makes
+`PDNTopology.domain_budget_w()` return the overhead-adjusted budget, so all
+brains (DPM/PRS/CVXPY/quota/job) size GPU caps against the power actually left
+for the GPUs. `validate_allocation()` checks GPU caps against
+`available_gpu_budget_w` and rolls a domain's `caps + node_overhead_w` into the
+PDU total. Default overhead is 0, so existing topologies are unchanged.
+
+**Done-when**: with a non-zero `node_overhead_w`, GPU caps sum to ≤
+`budget_w − node_overhead_w`. ✅ (`tests/test_node_overhead_n18.py`)
