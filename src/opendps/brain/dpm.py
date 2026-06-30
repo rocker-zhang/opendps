@@ -32,7 +32,7 @@ class DomainState:
     gpu_caps: dict[int, float]     # gpu_index -> current reported cap (W)
     ts: float                      # epoch seconds when the sample was taken
     gpu_max_caps: dict[int, float] = field(default_factory=dict)  # hardware max per GPU
-    # N16 — GPUs currently thermal-throttling (heat-limited, not power-limited).
+    # GPUs currently thermal-throttling (heat-limited, not power-limited).
     # Empty when unknown; brains treat an absent GPU as not-throttled.
     gpu_thermal_throttled: dict[int, bool] = field(default_factory=dict)
 

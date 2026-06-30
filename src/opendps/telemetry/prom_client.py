@@ -58,7 +58,7 @@ def NodeSampleFromProm(client: PromClient, hostname: str | None = None) -> NodeS
     cap_rows = client.query("DCGM_FI_DEV_POWER_CAP")
     clock_rows = client.query("DCGM_FI_DEV_SM_CLOCK")
     util_rows = client.query("DCGM_FI_DEV_GPU_UTIL")
-    temp_rows = client.query("DCGM_FI_DEV_GPU_TEMP")  # N16 — thermal signal
+    temp_rows = client.query("DCGM_FI_DEV_GPU_TEMP")  # thermal signal
 
     def _index(rows: list[dict], hn_filter: str | None) -> dict[str, float]:
         out: dict[str, float] = {}
@@ -83,7 +83,7 @@ def NodeSampleFromProm(client: PromClient, hostname: str | None = None) -> NodeS
             break
 
     all_gpus = sorted(
-        set(power_draw) | set(power_cap) | set(sm_clocks) | set(util) | set(temps),
+        set(power_draw) | set(power_cap) | set(sm_clocks) | set(util),
         key=lambda x: int(x),
     )
 

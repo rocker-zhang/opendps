@@ -1,4 +1,4 @@
-"""N16 — thermal-aware PRS brain.
+"""Thermal-aware PRS brain.
 
 A thermally-throttling GPU is heat-limited, not power-limited: giving it more
 power cap won't make it draw more, it just wastes budget (and invites more heat).
@@ -36,7 +36,10 @@ class ThermalAwarePRSBrain:
         # to the floor) and free the watts for GPUs that can actually use them.
         freed = 0.0
         for g in throttled:
-            reduced = max(self._min_cap_w, caps[g] * (1.0 - self._derate))
+            # Derate from whichever is lower — the PRS proposal or the cap the GPU
+            # currently holds — so a throttled GPU is never raised, only backed off.
+            base = min(caps[g], state.gpu_caps.get(g, caps[g]))
+            reduced = max(self._min_cap_w, base * (1.0 - self._derate))
             freed += caps[g] - reduced
             caps[g] = reduced
 

@@ -80,7 +80,7 @@ class ControllerConfig:
     quota_config: QuotaConfig | None = None
     # N15 — GPU index -> SLA tier (low/normal/high/critical) for --brain priority-prs.
     gpu_priority_tiers: dict[int, str] = field(default_factory=dict)
-    # N16 — thermal-aware control (thermal-prs). Sim: GPUs to force thermal-throttled;
+    # Thermal-aware control (thermal-prs). Sim: GPUs to force thermal-throttled;
     # real: temperature (C) at/above which a GPU counts as thermal-throttling.
     thermal_throttled_gpus: list[int] = field(default_factory=list)
     thermal_throttle_temp_c: float = 85.0
@@ -243,7 +243,7 @@ class StandaloneController:
                         g.power_max_limit_w if g.power_max_limit_w is not None else fallback_cap
                     )
 
-            # N16 — thermal-throttle signal. In sim it comes from --hot-gpus; on
+            # Thermal-throttle signal. In sim it comes from --hot-gpus; on
             # a real node from GPU temperature crossing the configured threshold.
             thermal: dict[int, bool] = {}
             for idx in gpu_draws:
@@ -288,7 +288,8 @@ class StandaloneController:
                 stats = _domain_stats(gpu_draws, decision.caps)
                 update_decision_metrics(
                     domain_name,
-                    prs_active=self._config.brain_type in ("prs", "job-prs", "quota-prs"),
+                    prs_active=self._config.brain_type
+                    in ("prs", "job-prs", "quota-prs", "priority-prs", "thermal-prs"),
                     domain_draw_w=stats["draw_w"],
                     domain_cap_w=stats["cap_w"],
                     idle_stranded_w=stats["idle_stranded_w"],
@@ -385,20 +386,20 @@ def main(argv: list[str] | None = None) -> int:
         "--brain",
         choices=["dpm", "prs", "cvxpy", "job-prs", "quota-prs", "priority-prs", "thermal-prs"],
         default="prs",
-        help="Brain algorithm: dpm = static proportional (v1), prs = EWMA reclaim (v2, default), cvxpy = LP solver (v3), quota-prs = per-tenant quota (N13), priority-prs = SLA-tiered preemption (N15), thermal-prs = thermal-aware (N16)",
+        help="Brain algorithm: dpm = static proportional, prs = EWMA reclaim (default), cvxpy = LP solver, quota-prs = per-tenant quota, priority-prs = SLA-tiered preemption, thermal-prs = thermal-aware",
     )
     parser.add_argument(
         "--hot-gpus",
         default="",
         metavar="IDX,IDX",
-        help="N16: comma-separated GPU indices to force thermal-throttled for --brain thermal-prs in sim",
+        help="comma-separated GPU indices to force thermal-throttled for --brain thermal-prs in sim",
     )
     parser.add_argument(
         "--thermal-throttle-temp-c",
         type=float,
         default=85.0,
         metavar="C",
-        help="N16: GPU temperature (C) at/above which a real GPU counts as thermal-throttling (default 85)",
+        help="GPU temperature (C) at/above which a real GPU counts as thermal-throttling (default 85)",
     )
     parser.add_argument(
         "--gpu-priority-tiers",

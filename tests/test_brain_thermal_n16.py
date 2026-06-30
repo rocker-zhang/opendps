@@ -111,3 +111,19 @@ def test_cli_hot_gpus_requires_sim(tmp_path):
     }))
     with pytest.raises(SystemExit):  # --hot-gpus without --sim
         main(["--brain", "thermal-prs", "--config", str(topo), "--hot-gpus", "0"])
+
+
+def test_throttled_gpu_never_raised_above_current():
+    """If PRS would raise a throttled GPU's cap, it is derated from the current
+    cap (never above it) — heat-limited GPUs are only backed off."""
+    # Idle GPU whose PRS floor proposes ABOVE its low current cap, but throttled.
+    state = DomainState(
+        domain_name=DOMAIN,
+        gpu_draws={0: 600.0, 1: 100.0},
+        gpu_caps={0: 300.0, 1: 800.0},      # GPU0 currently low-capped
+        gpu_max_caps={0: 1000.0, 1: 1000.0},
+        ts=time.time(),
+        gpu_thermal_throttled={0: True},
+    )
+    d = _brain(budget=2000.0).decide(DOMAIN, state)
+    assert d.caps[0] <= 300.0 + 1e-6, f"throttled GPU raised above its current cap: {d.caps[0]}"

@@ -22,8 +22,8 @@ An absent GPU is treated as not-throttled.
 
 `ThermalAwarePRSBrain` wraps PRS. For each thermal-throttled GPU it backs the cap
 off by `thermal_derate` (default 0.15) down to the `min_cap_w` floor, and hands
-the freed watts to non-throttled GPUs that have headroom below their hardware
-max, proportional to their current cap. The domain budget is never exceeded
+the freed watts to non-throttled GPUs in proportion to their remaining headroom
+below their hardware max. The domain budget is never exceeded
 (freed watts are only redistributed, capped at hardware max — any remainder is
 left as headroom).
 
