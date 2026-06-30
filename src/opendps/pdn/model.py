@@ -42,7 +42,11 @@ class PDNTopology:
     domains: dict[str, PowerDomain]
 
     def domain_budget_w(self, domain_name: str) -> float:
-        return self.domains[domain_name].budget_w
+        """Budget the brains allocate GPU caps against: the domain budget minus
+        node overhead (CPU/NVSwitch/memory). With the default overhead of 0 this
+        is just ``budget_w``; when overhead is set, GPU caps are sized against
+        the power actually left for the GPUs (N18)."""
+        return self.domains[domain_name].available_gpu_budget_w
 
     def pdu_for_domain(self, domain_name: str) -> PDU:
         return self.pdus[self.domains[domain_name].pdu_name]
@@ -55,17 +59,19 @@ class PDNTopology:
     ) -> bool:
         domain = self.domains[domain_name]
         proposed_total = sum(proposed_caps.values())
-        if proposed_total > domain.budget_w:
+        # GPU caps must fit the budget left for GPUs after node overhead (N18).
+        if proposed_total > domain.available_gpu_budget_w:
             return False
 
         pdu = self.pdus[domain.pdu_name]
-        # Sum caps for all domains on the same PDU, substituting proposed where it applies.
+        # Sum draw for all domains on the same PDU, substituting proposed where it
+        # applies. This domain draws its proposed GPU caps plus its node overhead;
+        # other domains' draw is unknown, so use their full budget as the ceiling.
         pdu_total = 0.0
         for d in self.domains_on_pdu(domain.pdu_name):
             if d.name == domain_name:
-                pdu_total += proposed_total
+                pdu_total += proposed_total + domain.node_overhead_w
             else:
-                # Unknown current draw for other domains; use their budget as the ceiling.
                 pdu_total += d.budget_w
         return pdu_total <= pdu.effective_capacity_w
 
