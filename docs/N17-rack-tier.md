@@ -19,7 +19,7 @@ makes that method rack-aware: when a domain belongs to a rack whose budget is
 **below the sum of its domains' budgets**, the domain's budget is first scaled to
 its proportional share of the rack:
 
-```
+```text
 domain_effective = domain.budget_w × rack.budget_w / Σ(rack domain budgets)
 ```
 

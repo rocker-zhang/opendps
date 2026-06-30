@@ -167,4 +167,9 @@ def from_dict(config: dict) -> PDNTopology:
             rack_name=spec.get("rack_name"),
         )
 
+    # A typo'd rack_name would silently disable rack enforcement; fail loudly.
+    for d in domains.values():
+        if d.rack_name is not None and d.rack_name not in racks:
+            raise ValueError(f"domain {d.name!r} references unknown rack {d.rack_name!r}")
+
     return PDNTopology(pdus=pdus, domains=domains, racks=racks)

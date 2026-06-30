@@ -98,8 +98,18 @@ def test_controller_respects_rack_budget_end_to_end():
         actuator_type="sim",
     )
     ctl = StandaloneController(cfg)
-    last = None
     for _ in range(6):
-        last = ctl.run_once()
-    total = sum(sum(d.caps.values()) for d in last)
-    assert total <= 6000.0 + 1.0, f"rack budget exceeded: {total}"
+        decisions = ctl.run_once()
+        # The rack budget must hold on every tick, not just the last one.
+        total = sum(sum(d.caps.values()) for d in decisions)
+        assert total <= 6000.0 + 1.0, f"rack budget exceeded: {total}"
+
+
+def test_from_dict_rejects_unknown_rack():
+    import pytest
+    with pytest.raises(ValueError, match="unknown rack"):
+        from_dict({
+            "pdus": {"pdu0": {"capacity_w": 10000.0}},
+            "domains": {"a": {"budget_w": 5000.0, "gpu_indices": [0],
+                              "pdu_name": "pdu0", "rack_name": "ghost"}},
+        })
