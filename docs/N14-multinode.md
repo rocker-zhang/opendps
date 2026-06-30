@@ -63,10 +63,9 @@ the total never exceeds the cluster budget.
 
 ## Limitations (not yet wired)
 
-- **Per-node budget adoption**: `rebalance()` computes per-node budgets, but the
-  path by which each node's controller *adopts* its new budget (re-pushed
-  topology, advisory log, or direct config update) is not yet wired — the
-  coordinator is run one-shot in the demo.
+- **Per-node budget adoption**: closed in N19 — the coordinator publishes each
+  node's budget into the store and the node's controller adopts it each tick
+  (see docs/N19-budget-adoption.md).
 - **Live multi-process run**: the demo uses the in-memory store in a single
   process; a real multi-node run needs the Redis store and a node-side publisher
   loop (the `RedisStore` is unit-tested against a mock, not a live server).

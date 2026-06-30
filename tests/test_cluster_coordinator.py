@@ -1,4 +1,5 @@
 from unittest.mock import MagicMock
+from pytest import approx as pytest_approx
 
 from opendps.controller.cluster_coordinator import ClusterCoordinator, InMemoryStore, NodeState
 import time
@@ -157,3 +158,115 @@ def test_cli_rejects_bad_args():
     for argv in bad:
         with pytest.raises(SystemExit):
             main(["--sim", *argv])
+
+
+# --- per-node budget adoption (coordinator -> controller) ---
+
+
+def _adopt_cap_sum(adopted_budget, topo_budget=8000.0, n=8):
+    """Run the controller for a node whose adopted budget is `adopted_budget`
+    and return the total caps it settles on."""
+    from opendps.controller.cluster_coordinator import InMemoryStore
+    from opendps.controller.standalone import ControllerConfig, StandaloneController
+    from opendps.pdn.presets import demo_single_domain
+    from opendps.sim.presets import oversub_scenario
+
+    store = InMemoryStore()
+    store.set_adopted_budget("nodeA", "domain-0", adopted_budget)
+    cfg = ControllerConfig(
+        topology=demo_single_domain(n_gpus=n, budget_w=topo_budget),
+        actuator=oversub_scenario(n_gpus=n),
+        sim_mode=True, brain_type="prs", metrics_port=None, actuator_type="sim",
+        node_state_store=store, node_id="nodeA",
+    )
+    ctl = StandaloneController(cfg)
+    last = None
+    for _ in range(6):
+        last = ctl.run_once()
+    return sum(last[0].caps.values())
+
+
+def test_coordinator_publishes_adopted_budgets():
+    from opendps.controller.cluster_coordinator import ClusterCoordinator, InMemoryStore
+
+    store = InMemoryStore()
+    store.publish(_state("nodeA", draw_w=6000.0))
+    store.publish(_state("nodeB", draw_w=100.0))
+    budgets = ClusterCoordinator(store, total_cluster_budget_w=16000.0).rebalance()
+    # The rebalanced budget is published per node/domain for adoption.
+    assert store.get_adopted_budget("nodeA", "d0") == pytest_approx(budgets["nodeA"])
+    assert store.get_adopted_budget("nodeB", "d0") == pytest_approx(budgets["nodeB"])
+
+
+def test_controller_caps_track_adopted_budget():
+    """A larger adopted budget yields a larger total cap, and a low adopted
+    budget binds the caps below it."""
+    low = _adopt_cap_sum(2500.0)
+    high = _adopt_cap_sum(5000.0)
+    assert low <= 2500.0 + 1.0, f"adopted budget not binding: {low}"
+    assert high > low, f"caps should rise with the adopted budget: low={low} high={high}"
+
+
+def test_below_min_adopted_falls_back_to_topology():
+    from opendps.controller.cluster_coordinator import InMemoryStore
+    from opendps.controller.standalone import ControllerConfig, StandaloneController
+    from opendps.pdn.presets import demo_single_domain
+    from opendps.sim.presets import oversub_scenario
+
+    store = InMemoryStore()
+    store.set_adopted_budget("nodeA", "domain-0", 5.0)  # implausibly small
+    cfg = ControllerConfig(
+        topology=demo_single_domain(n_gpus=8, budget_w=3000.0),
+        actuator=oversub_scenario(n_gpus=8),
+        sim_mode=True, brain_type="prs", metrics_port=None, actuator_type="sim",
+        node_state_store=store, node_id="nodeA", adopted_budget_min_w=100.0,
+    )
+    ctl = StandaloneController(cfg)
+    last = None
+    for _ in range(6):
+        last = ctl.run_once()
+    # Fell back to the 3000 W topology budget, not the 5 W adopted one.
+    assert sum(last[0].caps.values()) > 100.0
+
+
+def test_unknown_node_returns_no_adopted_budget():
+    from opendps.controller.cluster_coordinator import InMemoryStore
+    store = InMemoryStore()
+    store.set_adopted_budget("nodeA", "dom0", 4000.0)
+    assert store.get_adopted_budget("nodeZ", "dom0") is None
+
+
+def test_validate_allocation_uses_adopted_budget():
+    from opendps.pdn.model import PDU, PDNTopology, PowerDomain
+    topo = PDNTopology(
+        pdus={"p": PDU("p", 100000.0, 1.0)},
+        domains={"d": PowerDomain("d", 8000.0, [0, 1, 2, 3], "p")},
+    )
+    assert topo.validate_allocation("d", {i: 2000.0 for i in range(4)}) is True  # 8000 == budget
+    topo.adopt_budget("d", 4000.0)  # coordinator hands down a smaller budget
+    assert topo.validate_allocation("d", {i: 2000.0 for i in range(4)}) is False  # 8000 > 4000
+    assert topo.validate_allocation("d", {i: 1000.0 for i in range(4)}) is True   # 4000 fits
+
+
+def test_controller_fails_open_on_store_error():
+    """A store read that raises must not abort the tick — fall back to topology."""
+    from opendps.controller.standalone import ControllerConfig, StandaloneController
+    from opendps.pdn.presets import demo_single_domain
+    from opendps.sim.presets import oversub_scenario
+
+    class BadStore:
+        def publish(self, s): ...
+        def get_all(self): return []
+        def set_adopted_budget(self, *a): ...
+        def get_adopted_budget(self, *a):
+            raise RuntimeError("store unavailable")
+
+    cfg = ControllerConfig(
+        topology=demo_single_domain(n_gpus=8, budget_w=8000.0),
+        actuator=oversub_scenario(n_gpus=8),
+        sim_mode=True, brain_type="prs", metrics_port=None, actuator_type="sim",
+        node_state_store=BadStore(), node_id="nodeA",
+    )
+    ctl = StandaloneController(cfg)
+    last = ctl.run_once()  # must not raise
+    assert last and sum(last[0].caps.values()) > 0

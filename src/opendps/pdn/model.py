@@ -53,15 +53,28 @@ class PDNTopology:
     pdus: dict[str, PDU]
     domains: dict[str, PowerDomain]
     racks: dict[str, Rack] = field(default_factory=dict)
+    # Runtime per-domain budget overrides adopted from a cluster coordinator.
+    # Empty by default; when set, it supersedes the static topology budget.
+    adopted_budget_w: dict[str, float] = field(default_factory=dict)
+
+    def adopt_budget(self, domain_name: str, budget_w: float) -> None:
+        """Override a domain's base budget at runtime (e.g. a node budget handed
+        down by the cluster coordinator). Supersedes the static/rack budget."""
+        self.adopted_budget_w[domain_name] = budget_w
+
+    def release_budget(self, domain_name: str) -> None:
+        self.adopted_budget_w.pop(domain_name, None)
 
     def domain_budget_w(self, domain_name: str) -> float:
         """Budget the brains allocate GPU caps against: the domain budget minus
-        node overhead. When the domain belongs to a rack whose budget is below
-        the sum of its domains' budgets, the domain's budget is first scaled to
-        its proportional share of the rack, so the sum of GPU budgets across the
-        rack never exceeds the rack budget. With no rack and zero overhead this
-        is just ``budget_w``."""
+        node overhead. A coordinator-adopted budget (if present) supersedes the
+        static budget; otherwise, when the domain belongs to a rack whose budget
+        is below the sum of its domains' budgets, the domain's budget is scaled
+        to its proportional share of the rack. With no override, no rack and zero
+        overhead this is just ``budget_w``."""
         domain = self.domains[domain_name]
+        if domain_name in self.adopted_budget_w:
+            return max(0.0, self.adopted_budget_w[domain_name] - domain.node_overhead_w)
         budget = domain.budget_w
         rack = self.rack_for_domain(domain_name)
         if rack is not None:
@@ -88,8 +101,9 @@ class PDNTopology:
     ) -> bool:
         domain = self.domains[domain_name]
         proposed_total = sum(proposed_caps.values())
-        # GPU caps must fit the budget left for GPUs after node overhead (N18).
-        if proposed_total > domain.available_gpu_budget_w:
+        # GPU caps must fit the effective budget — overhead-adjusted, and after
+        # any rack scaling or coordinator-adopted override (domain_budget_w).
+        if proposed_total > self.domain_budget_w(domain_name):
             return False
 
         pdu = self.pdus[domain.pdu_name]

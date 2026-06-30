@@ -19,6 +19,10 @@ class NodeState:
 class NodeStateStore(Protocol):
     def publish(self, state: NodeState) -> None: ...
     def get_all(self) -> list[NodeState]: ...
+    # Budget adoption: the coordinator publishes each node/domain's rebalanced
+    # budget; that node's controller reads it back and adopts it.
+    def set_adopted_budget(self, node_id: str, domain_name: str, budget_w: float) -> None: ...
+    def get_adopted_budget(self, node_id: str, domain_name: str) -> float | None: ...
 
 
 class InMemoryStore:
@@ -26,6 +30,7 @@ class InMemoryStore:
 
     def __init__(self) -> None:
         self._states: dict[str, NodeState] = {}
+        self._adopted: dict[tuple[str, str], float] = {}
         self._lock = threading.Lock()
 
     def publish(self, state: NodeState) -> None:
@@ -35,6 +40,14 @@ class InMemoryStore:
     def get_all(self) -> list[NodeState]:
         with self._lock:
             return list(self._states.values())
+
+    def set_adopted_budget(self, node_id: str, domain_name: str, budget_w: float) -> None:
+        with self._lock:
+            self._adopted[(node_id, domain_name)] = budget_w
+
+    def get_adopted_budget(self, node_id: str, domain_name: str) -> float | None:
+        with self._lock:
+            return self._adopted.get((node_id, domain_name))
 
 
 class RedisStore:
@@ -48,6 +61,7 @@ class RedisStore:
     Requires: pip install redis
     """
     _PREFIX = "opendps:node:"
+    _BUDGET_PREFIX = "opendps:budget:"  # separate keyspace so get_all() ignores budgets
 
     def __init__(self, redis_url: str = "redis://localhost:6379", ttl_s: int = 30):
         self._url = redis_url
@@ -81,6 +95,14 @@ class RedisStore:
                 d = json.loads(raw)
                 states.append(NodeState(**d))
         return states
+
+    def set_adopted_budget(self, node_id: str, domain_name: str, budget_w: float) -> None:
+        client = self._get_client()
+        client.setex(f"{self._BUDGET_PREFIX}{node_id}:{domain_name}", self._ttl, str(budget_w))
+
+    def get_adopted_budget(self, node_id: str, domain_name: str) -> float | None:
+        raw = self._get_client().get(f"{self._BUDGET_PREFIX}{node_id}:{domain_name}")
+        return float(raw) if raw else None
 
 
 class ClusterCoordinator:
@@ -132,6 +154,10 @@ class ClusterCoordinator:
         for s in states:
             extra = (s.draw_w / total_draw) * surplus
             new_budgets[s.node_id] = min(floor + extra, ceil)
+        # Publish only after the full set is computed, so a failure while
+        # computing can't leave controllers split across old and new budgets.
+        for s in states:
+            self._store.set_adopted_budget(s.node_id, s.domain_name, new_budgets[s.node_id])
         with self._lock:
             self._node_budgets = dict(new_budgets)
         return new_budgets
