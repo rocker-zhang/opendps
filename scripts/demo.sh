@@ -215,6 +215,26 @@ else
   bad "coordinator produced no node budgets (B0=$B0 B1=$B1 TOT=$TOT)"
 fi
 
+# DC11 — N15 SLA-tiered priority preemption. GPUs 0/1/2 carry the same load but
+# are tagged critical/low/normal; under the tight budget the critical GPU keeps
+# the most cap, the low GPU the least (preempted), normal in between.
+say "DC11: SLA-tiered priority preemption (N15)"
+"${CTL[@]}" --sim --brain priority-prs --config deploy/topology-jobdemo.json \
+  --gpu-priority-tiers '{"0":"critical","1":"low","2":"normal"}' \
+  --metrics-port 19425 --interval 0.4 >/dev/null 2>&1 &
+P_PID=$!
+trap 'kill "$P_PID" 2>/dev/null || true' INT TERM EXIT
+P_METRICS=$(wait_for_caps "$HOST:19425/metrics" 15)
+kill "$P_PID" 2>/dev/null || true; wait "$P_PID" 2>/dev/null || true
+trap - INT TERM EXIT
+CRIT=$(tenant_cap_sum "$P_METRICS" 0); LOW=$(tenant_cap_sum "$P_METRICS" 1); NORM=$(tenant_cap_sum "$P_METRICS" 2)
+if is_num "$CRIT" && is_num "$LOW" && is_num "$NORM"; then
+  printf "  critical GPU0 = %.0f W; normal GPU2 = %.0f W; low GPU1 = %.0f W\n" "$CRIT" "$NORM" "$LOW"
+  if awk "BEGIN{exit !($CRIT > $NORM && $NORM > $LOW)}"; then ok "tier order holds: critical > normal > low"; else bad "tier order broken: crit=$CRIT norm=$NORM low=$LOW"; fi
+else
+  bad "priority-prs exported no per-GPU cap metrics (crit=$CRIT norm=$NORM low=$LOW)"
+fi
+
 # DC4 — real GPU failsafe latency (hardware-gated).
 say "DC4: real-GPU failsafe latency"
 gate "requires a cap-capable GPU node (A10/B300/GB200) — run scripts/hw_failsafe.sh there"
