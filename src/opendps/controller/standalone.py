@@ -464,6 +464,8 @@ def main(argv: list[str] | None = None) -> int:
             gpu_priority_tiers = {int(k): str(v) for k, v in raw.items()}
         except (ValueError, TypeError, AttributeError) as exc:
             parser.error(f"--gpu-priority-tiers must be a JSON object of gpu->tier: {exc}")
+        if not gpu_priority_tiers:
+            parser.error("--gpu-priority-tiers must map at least one GPU to a tier")
 
     # A PowerPolicy-derived params.json (written by the operator into the domain
     # ConfigMap) overrides CLI defaults when present, so a PowerPolicy CR change

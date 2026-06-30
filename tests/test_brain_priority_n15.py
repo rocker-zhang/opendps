@@ -61,8 +61,10 @@ def test_unknown_tier_rejected():
 
 
 def test_idle_high_tier_gpu_not_boosted():
-    """A high-tier but idle GPU keeps its PRS floor — tier does not boost idle."""
-    brain = _brain({0: "critical", 1: "critical", 2: "normal", 3: "normal"})
+    """Tier does not boost an *idle* GPU: an idle critical GPU gets no more than
+    an equally-idle normal peer (both stay at the PRS floor)."""
+    # GPU 2 is idle+critical, GPU 3 is idle+normal — same low load.
+    brain = _brain({0: "critical", 1: "normal", 2: "critical", 3: "normal"})
     state = DomainState(
         domain_name=DOMAIN,
         gpu_draws={0: 500.0, 1: 500.0, 2: 50.0, 3: 50.0},  # 2,3 idle (low ratio)
@@ -71,8 +73,9 @@ def test_idle_high_tier_gpu_not_boosted():
         ts=time.time(),
     )
     d = brain.decide(DOMAIN, state)
-    # idle normal GPUs stay near the floor, well below the busy critical ones
-    assert d.caps[2] < d.caps[0] and d.caps[3] < d.caps[1]
+    # idle critical (2) is NOT boosted above idle normal (3) — tier ignored when idle
+    assert abs(d.caps[2] - d.caps[3]) < 1.0, f"idle critical was boosted: {d.caps}"
+    assert d.caps[2] < d.caps[0]  # idle critical still below the busy critical
     assert sum(d.caps.values()) <= 2000.0 + 1.0
 
 
@@ -123,6 +126,10 @@ def test_cli_priority_prs_requires_tiers(tmp_path):
     with pytest.raises(SystemExit):
         main(["--sim", "--brain", "prs", "--config", str(topo),
               "--gpu-priority-tiers", '{"0":"high"}'])
+    # an empty mapping is a clean CLI error, not a raw ValueError later
+    with pytest.raises(SystemExit):
+        main(["--sim", "--brain", "priority-prs", "--config", str(topo),
+              "--gpu-priority-tiers", "{}"])
 
 
 def test_never_oversubscribes_when_floors_infeasible():

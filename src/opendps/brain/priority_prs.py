@@ -9,8 +9,6 @@ GPUs keep their PRS floor untouched, and the domain budget is never exceeded.
 """
 from __future__ import annotations
 
-import time
-
 from opendps.brain.dpm import BrainDecision, DomainState
 from opendps.brain.prs import PRSBrain
 from opendps.pdn.model import PDNTopology
@@ -89,11 +87,14 @@ class PriorityTieredPRSBrain:
             for g in caps:
                 caps[g] *= scale
 
+        # Keep the wrapped PRS's raise-limiter baseline in sync with the caps we
+        # actually return, so next tick's limiter compares against reality.
+        self._prs.note_applied_caps(domain_name, caps)
         return BrainDecision(
             domain=domain_name,
             caps=caps,
             reason=f"priority-prs:{len(contended)}contended",
-            ts=time.time(),
+            ts=state.ts,
         )
 
     def get_last_metrics(self, domain_name: str):

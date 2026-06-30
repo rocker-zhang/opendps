@@ -189,6 +189,12 @@ class PRSBrain:
         """Return the PRSMetrics from the most recent decide() for this domain."""
         return self._last_metrics.get(domain_name)
 
+    def note_applied_caps(self, domain_name: str, caps: dict[int, float]) -> None:
+        """Record the caps a wrapping brain actually applied this tick, so the
+        N5 cap-raise rate limiter compares against reality (not PRS's own
+        pre-rewrite output) on the next tick."""
+        self._last_caps[domain_name] = dict(caps)
+
     def reset_ewma(self, domain_name: str | None = None) -> None:
         """Clear EWMA state (useful for tests or warm-restart)."""
         if domain_name is None:
