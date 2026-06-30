@@ -78,6 +78,8 @@ class ControllerConfig:
     telemetry: str = "prom"
     # N13 — per-tenant quota enforcement (required for --brain quota-prs).
     quota_config: QuotaConfig | None = None
+    # N15 — GPU index -> SLA tier (low/normal/high/critical) for --brain priority-prs.
+    gpu_priority_tiers: dict[int, str] = field(default_factory=dict)
 
 
 class StandaloneController:
@@ -140,6 +142,19 @@ class StandaloneController:
             self._brain: Any = QuotaAwarePRSBrain(
                 config.topology,
                 config.quota_config,
+                ewma_alpha=config.ewma_alpha,
+                cap_raise_rate_w_per_tick=config.cap_raise_rate_w_per_tick,
+            )
+        elif config.brain_type == "priority-prs":
+            from typing import Any
+
+            from opendps.brain.priority_prs import PriorityTieredPRSBrain
+
+            if not config.gpu_priority_tiers:
+                raise ValueError("--brain priority-prs requires --gpu-priority-tiers")
+            self._brain: Any = PriorityTieredPRSBrain(
+                config.topology,
+                config.gpu_priority_tiers,
                 ewma_alpha=config.ewma_alpha,
                 cap_raise_rate_w_per_tick=config.cap_raise_rate_w_per_tick,
             )
@@ -340,9 +355,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--brain",
-        choices=["dpm", "prs", "cvxpy", "job-prs", "quota-prs"],
+        choices=["dpm", "prs", "cvxpy", "job-prs", "quota-prs", "priority-prs"],
         default="prs",
-        help="Brain algorithm: dpm = static proportional (v1), prs = EWMA reclaim (v2, default), cvxpy = LP solver (v3), quota-prs = per-tenant quota enforcement (N13)",
+        help="Brain algorithm: dpm = static proportional (v1), prs = EWMA reclaim (v2, default), cvxpy = LP solver (v3), quota-prs = per-tenant quota (N13), priority-prs = SLA-tiered preemption (N15)",
+    )
+    parser.add_argument(
+        "--gpu-priority-tiers",
+        default=None,
+        metavar="JSON",
+        help='N15: GPU->SLA tier map for --brain priority-prs, e.g. \'{"0":"critical","1":"low"}\' (tiers: low/normal/high/critical; unmapped GPUs default to normal)',
     )
     parser.add_argument(
         "--metrics-port",
@@ -431,6 +452,19 @@ def main(argv: list[str] | None = None) -> int:
                 "or place quota.json next to --config"
             )
 
+    # N15 — GPU -> SLA tier map for priority-prs.
+    if args.gpu_priority_tiers is not None and args.brain != "priority-prs":
+        parser.error("--gpu-priority-tiers is only used by --brain priority-prs")
+    gpu_priority_tiers: dict[int, str] = {}
+    if args.brain == "priority-prs":
+        if not args.gpu_priority_tiers:
+            parser.error("--brain priority-prs requires --gpu-priority-tiers")
+        try:
+            raw = json.loads(args.gpu_priority_tiers)
+            gpu_priority_tiers = {int(k): str(v) for k, v in raw.items()}
+        except (ValueError, TypeError, AttributeError) as exc:
+            parser.error(f"--gpu-priority-tiers must be a JSON object of gpu->tier: {exc}")
+
     # A PowerPolicy-derived params.json (written by the operator into the domain
     # ConfigMap) overrides CLI defaults when present, so a PowerPolicy CR change
     # propagates to the controller. CLI flags remain the source for compose/sim.
@@ -489,6 +523,7 @@ def main(argv: list[str] | None = None) -> int:
         priority_boost=priority_boost,
         telemetry=args.telemetry,
         quota_config=quota_config,
+        gpu_priority_tiers=gpu_priority_tiers,
     )
     StandaloneController(cfg).run()
     return 0

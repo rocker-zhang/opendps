@@ -303,3 +303,17 @@ PDU total. Default overhead is 0, so existing topologies are unchanged.
 
 **Done-when**: with a non-zero `node_overhead_w`, GPU caps sum to ≤
 `budget_w − node_overhead_w`. ✅ (`tests/test_node_overhead_n18.py`)
+
+## N15 — SLA-tiered priority preemption
+
+**Status**: Implemented.
+
+`priorityClass` was captured by the operator but never read back by any brain.
+N15 adds `PriorityTieredPRSBrain` (`--brain priority-prs` + `--gpu-priority-tiers`):
+under contention the budget surplus is split by `draw × tier_weight`
+(low 0.5 / normal 1.0 / high 2.0 / critical 4.0), so higher-tier GPUs keep more
+cap while every GPU keeps a floor and `Σcaps ≤ budget`. Design doc:
+`docs/N15-priority-preemption.md`.
+
+**Done-when**: under equal load and budget pressure, a higher-tier GPU is capped
+above a lower-tier one. ✅ (`demo.sh` DC11; `tests/test_brain_priority_n15.py`)
