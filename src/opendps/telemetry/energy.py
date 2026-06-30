@@ -17,15 +17,21 @@ class EnergyAccountant:
 
     energy_j: dict[int, float] = field(default_factory=dict)
 
-    def add_tick(self, gpu_draws_w: dict[int, float], dt_s: float) -> None:
+    def add_tick(self, gpu_draws_w: dict[int, float], dt_s: float) -> dict[int, float]:
         """Integrate one tick: add ``draw × dt`` joules per GPU. Non-positive dt
         (a fixed interval is never negative; clock skew on the real path) is
-        ignored so the counter is monotonic."""
+        ignored so the counter is monotonic. Returns the joules added per GPU
+        this tick, so callers (e.g. per-tenant metrics) attribute from the same
+        source of truth rather than re-integrating."""
+        added: dict[int, float] = {}
         if dt_s <= 0:
-            return
+            return added
         for gpu, draw in gpu_draws_w.items():
             if draw is not None:
-                self.energy_j[gpu] = self.energy_j.get(gpu, 0.0) + draw * dt_s
+                joules = draw * dt_s
+                self.energy_j[gpu] = self.energy_j.get(gpu, 0.0) + joules
+                added[gpu] = joules
+        return added
 
     def gpu_energy_wh(self, gpu: int) -> float:
         return self.energy_j.get(gpu, 0.0) / _J_PER_WH

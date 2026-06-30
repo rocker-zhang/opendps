@@ -38,9 +38,16 @@ def test_missing_gpu_contributes_zero():
 
 def test_none_draw_skipped():
     acc = EnergyAccountant()
-    acc.add_tick({0: None, 1: 100.0}, dt_s=5.0)  # type: ignore[dict-item]
-    assert 0 not in acc.energy_j
+    added = acc.add_tick({0: None, 1: 100.0}, dt_s=5.0)  # type: ignore[dict-item]
+    assert 0 not in acc.energy_j and 0 not in added  # None GPU absent everywhere
     assert acc.energy_j[1] == pytest.approx(500.0)
+    assert added[1] == pytest.approx(500.0)  # returned delta matches what was added
+
+
+def test_add_tick_returns_empty_on_non_positive_dt():
+    acc = EnergyAccountant()
+    assert acc.add_tick({0: 100.0}, dt_s=0.0) == {}
+    assert acc.add_tick({0: 100.0}, dt_s=-1.0) == {}
 
 
 # --- controller showback ---
@@ -85,3 +92,5 @@ def test_controller_showback_empty_without_quota():
     ctl = StandaloneController(cfg)
     ctl.run_once()
     assert ctl.energy_showback() == {}
+    # Per-GPU energy still accrues even without tenants to attribute it to.
+    assert ctl._energy.total_wh() > 0.0

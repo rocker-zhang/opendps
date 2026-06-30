@@ -304,16 +304,14 @@ class StandaloneController:
             decisions.append(decision)
 
             # Energy accounting: integrate draw over the tick interval and, when
-            # tenants are defined, attribute the tick's kWh to each tenant.
-            dt = self._config.interval_s
-            self._energy.add_tick(gpu_draws, dt)
+            # tenants are defined, attribute this tick's kWh to each tenant from
+            # the same per-GPU joules the accountant recorded (single source).
+            added_j = self._energy.add_tick(gpu_draws, self._config.interval_s)
             if self._config.quota_config is not None:
                 for tenant in self._config.quota_config.tenants:
                     if tenant.domain_name != domain_name:
                         continue
-                    delta_kwh = sum(
-                        gpu_draws.get(g, 0.0) for g in tenant.gpu_indices
-                    ) * dt / 3_600_000.0
+                    delta_kwh = sum(added_j.get(g, 0.0) for g in tenant.gpu_indices) / 3_600_000.0
                     add_tenant_energy_kwh(domain_name, tenant.tenant_id, delta_kwh)
 
             if not self._config.dry_run:
