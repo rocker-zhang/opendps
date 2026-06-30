@@ -46,7 +46,13 @@ from opendps.controller.cluster_coordinator import NodeStateStore
 from opendps.pdn.model import PDNTopology, from_dict
 from opendps.pdn.quota import QuotaConfig
 from opendps.sim.protocol import Actuator
-from opendps.telemetry.metrics import start_healthz_server, start_metrics_server, update_decision_metrics
+from opendps.telemetry.energy import EnergyAccountant
+from opendps.telemetry.metrics import (
+    add_tenant_energy_kwh,
+    start_healthz_server,
+    start_metrics_server,
+    update_decision_metrics,
+)
 from opendps.telemetry.prom_client import NodeSampleFromProm, PromClient
 
 log = logging.getLogger(__name__)
@@ -112,6 +118,7 @@ class StandaloneController:
     def __init__(self, config: ControllerConfig) -> None:
         self._config = config
         self._thermal_throttled_gpus = set(config.thermal_throttled_gpus)
+        self._energy = EnergyAccountant()
         if config.brain_type == "prs":
             self._brain: DPMBrain | PRSBrain = PRSBrain(
                 config.topology,
@@ -296,6 +303,17 @@ class StandaloneController:
             decision = self._brain.decide(domain_name, state)
             decisions.append(decision)
 
+            # Energy accounting: integrate draw over the tick interval and, when
+            # tenants are defined, attribute this tick's kWh to each tenant from
+            # the same per-GPU joules the accountant recorded (single source).
+            added_j = self._energy.add_tick(gpu_draws, self._config.interval_s)
+            if self._config.quota_config is not None:
+                for tenant in self._config.quota_config.tenants:
+                    if tenant.domain_name != domain_name:
+                        continue
+                    delta_kwh = sum(added_j.get(g, 0.0) for g in tenant.gpu_indices) / 3_600_000.0
+                    add_tenant_energy_kwh(domain_name, tenant.tenant_id, delta_kwh)
+
             if not self._config.dry_run:
                 # Check the class (not the instance) so MagicMock in tests doesn't
                 # shadow the real method check via __getattr__.
@@ -343,6 +361,15 @@ class StandaloneController:
             self._config.actuator.tick()
 
         return decisions
+
+    def energy_showback(self) -> dict[str, float]:
+        """Per-tenant cumulative energy (kWh) for showback/chargeback. Empty when
+        no quota/tenant config is present."""
+        report: dict[str, float] = {}
+        if self._config.quota_config is not None:
+            for tenant in self._config.quota_config.tenants:
+                report[tenant.tenant_id] = self._energy.tenant_energy_wh(tenant.gpu_indices) / 1000.0
+        return report
 
     def run(self) -> None:
         """Run forever at config.interval_s.
