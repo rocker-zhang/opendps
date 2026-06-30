@@ -466,6 +466,10 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(f"--gpu-priority-tiers must be a JSON object of gpu->tier: {exc}")
         if not gpu_priority_tiers:
             parser.error("--gpu-priority-tiers must map at least one GPU to a tier")
+        topo_gpus = {g for d in topology.domains.values() for g in d.gpu_indices}
+        stray = sorted(set(gpu_priority_tiers) - topo_gpus)
+        if stray:
+            parser.error(f"--gpu-priority-tiers references GPUs {stray} not in the topology")
 
     # A PowerPolicy-derived params.json (written by the operator into the domain
     # ConfigMap) overrides CLI defaults when present, so a PowerPolicy CR change

@@ -138,3 +138,19 @@ def test_never_oversubscribes_when_floors_infeasible():
     brain = _brain({0: "critical", 1: "low", 2: "normal", 3: "normal"}, budget=500.0)
     d = brain.decide(DOMAIN, _contended_state())
     assert sum(d.caps.values()) <= 500.0 + 1e-6, f"oversubscribed: {d.caps}"
+
+
+def test_cli_rejects_tier_for_unknown_gpu(tmp_path):
+    import json
+
+    from opendps.controller.standalone import main
+
+    topo = tmp_path / "topo.json"
+    topo.write_text(json.dumps({
+        "pdus": {"p": {"name": "p", "capacity_w": 9000.0, "derating": 0.9}},
+        "domains": {"domain0": {"name": "domain0", "budget_w": 8000.0,
+                                "gpu_indices": [0, 1], "pdu_name": "p", "priority": 0}},
+    }))
+    with pytest.raises(SystemExit):  # GPU 99 not in the topology
+        main(["--sim", "--brain", "priority-prs", "--config", str(topo),
+              "--gpu-priority-tiers", '{"99":"critical"}'])
