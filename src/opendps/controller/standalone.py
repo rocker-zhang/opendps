@@ -35,6 +35,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -80,6 +81,10 @@ class ControllerConfig:
     quota_config: QuotaConfig | None = None
     # N15 — GPU index -> SLA tier (low/normal/high/critical) for --brain priority-prs.
     gpu_priority_tiers: dict[int, str] = field(default_factory=dict)
+    # Thermal-aware control (thermal-prs). Sim: GPUs to force thermal-throttled;
+    # real: temperature (C) at/above which a GPU counts as thermal-throttling.
+    thermal_throttled_gpus: list[int] = field(default_factory=list)
+    thermal_throttle_temp_c: float = 85.0
 
 
 class StandaloneController:
@@ -100,6 +105,7 @@ class StandaloneController:
 
     def __init__(self, config: ControllerConfig) -> None:
         self._config = config
+        self._thermal_throttled_gpus = set(config.thermal_throttled_gpus)
         if config.brain_type == "prs":
             self._brain: DPMBrain | PRSBrain = PRSBrain(
                 config.topology,
@@ -155,6 +161,16 @@ class StandaloneController:
             self._brain: Any = PriorityTieredPRSBrain(
                 config.topology,
                 config.gpu_priority_tiers,
+                ewma_alpha=config.ewma_alpha,
+                cap_raise_rate_w_per_tick=config.cap_raise_rate_w_per_tick,
+            )
+        elif config.brain_type == "thermal-prs":
+            from typing import Any
+
+            from opendps.brain.thermal_prs import ThermalAwarePRSBrain
+
+            self._brain: Any = ThermalAwarePRSBrain(
+                config.topology,
                 ewma_alpha=config.ewma_alpha,
                 cap_raise_rate_w_per_tick=config.cap_raise_rate_w_per_tick,
             )
@@ -228,12 +244,25 @@ class StandaloneController:
                         g.power_max_limit_w if g.power_max_limit_w is not None else fallback_cap
                     )
 
+            # Thermal-throttle signal. In sim it comes from --hot-gpus; on
+            # a real node from GPU temperature crossing the configured threshold.
+            thermal: dict[int, bool] = {}
+            for idx in gpu_draws:
+                if idx in self._thermal_throttled_gpus:
+                    thermal[idx] = True
+                elif not read_actuator and gpu_by_index is not None:
+                    g = gpu_by_index.get(idx)
+                    temp = getattr(g, "temperature_c", None) if g else None
+                    if temp is not None and temp >= self._config.thermal_throttle_temp_c:
+                        thermal[idx] = True
+
             state = DomainState(
                 domain_name=domain_name,
                 gpu_draws=gpu_draws,
                 gpu_caps=gpu_caps,
                 gpu_max_caps=gpu_max_caps,
                 ts=ts,
+                gpu_thermal_throttled=thermal,
             )
             decision = self._brain.decide(domain_name, state)
             decisions.append(decision)
@@ -260,7 +289,8 @@ class StandaloneController:
                 stats = _domain_stats(gpu_draws, decision.caps)
                 update_decision_metrics(
                     domain_name,
-                    prs_active=self._config.brain_type in ("prs", "job-prs", "quota-prs"),
+                    prs_active=self._config.brain_type
+                    in ("prs", "job-prs", "quota-prs", "priority-prs", "thermal-prs"),
                     domain_draw_w=stats["draw_w"],
                     domain_cap_w=stats["cap_w"],
                     idle_stranded_w=stats["idle_stranded_w"],
@@ -355,9 +385,22 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--brain",
-        choices=["dpm", "prs", "cvxpy", "job-prs", "quota-prs", "priority-prs"],
+        choices=["dpm", "prs", "cvxpy", "job-prs", "quota-prs", "priority-prs", "thermal-prs"],
         default="prs",
-        help="Brain algorithm: dpm = static proportional (v1), prs = EWMA reclaim (v2, default), cvxpy = LP solver (v3), quota-prs = per-tenant quota (N13), priority-prs = SLA-tiered preemption (N15)",
+        help="Brain algorithm: dpm = static proportional, prs = EWMA reclaim (default), cvxpy = LP solver, quota-prs = per-tenant quota, priority-prs = SLA-tiered preemption, thermal-prs = thermal-aware",
+    )
+    parser.add_argument(
+        "--hot-gpus",
+        default="",
+        metavar="IDX,IDX",
+        help="comma-separated GPU indices to force thermal-throttled for --brain thermal-prs in sim",
+    )
+    parser.add_argument(
+        "--thermal-throttle-temp-c",
+        type=float,
+        default=85.0,
+        metavar="C",
+        help="GPU temperature (C) at/above which a real GPU counts as thermal-throttling (default 85)",
     )
     parser.add_argument(
         "--gpu-priority-tiers",
@@ -431,6 +474,15 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--busy-gpus must be a comma-separated list of GPU indices")
     if busy_gpus and not args.sim:
         parser.error("--busy-gpus is a sim/demo-only override; use it with --sim")
+
+    try:
+        hot_gpus = [int(x) for x in args.hot_gpus.split(",") if x.strip()]
+    except ValueError:
+        parser.error("--hot-gpus must be a comma-separated list of GPU indices")
+    if hot_gpus and not args.sim:
+        parser.error("--hot-gpus is a sim/demo-only override; use it with --sim")
+    if not math.isfinite(args.thermal_throttle_temp_c) or args.thermal_throttle_temp_c <= 0:
+        parser.error("--thermal-throttle-temp-c must be a finite positive number")
 
     with open(args.config) as fh:
         topology = from_dict(json.load(fh))
@@ -530,6 +582,8 @@ def main(argv: list[str] | None = None) -> int:
         telemetry=args.telemetry,
         quota_config=quota_config,
         gpu_priority_tiers=gpu_priority_tiers,
+        thermal_throttled_gpus=hot_gpus,
+        thermal_throttle_temp_c=args.thermal_throttle_temp_c,
     )
     StandaloneController(cfg).run()
     return 0

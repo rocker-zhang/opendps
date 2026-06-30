@@ -235,6 +235,25 @@ else
   bad "priority-prs exported no per-GPU cap metrics (crit=$CRIT norm=$NORM low=$LOW)"
 fi
 
+# DC12 — N16 thermal-aware control. GPU0 is forced thermal-throttled; the brain
+# backs its cap off (heat-limited GPUs can't use the power) and frees the watts
+# to an equally-hot non-throttled peer.
+say "DC12: thermal-aware control (N16)"
+"${CTL[@]}" --sim --brain thermal-prs --config "$CONFIG" \
+  --hot-gpus 0 --metrics-port 19426 --interval 0.4 >/dev/null 2>&1 &
+T_PID=$!
+trap 'kill "$T_PID" 2>/dev/null || true' INT TERM EXIT
+T_METRICS=$(wait_for_caps "$HOST:19426/metrics" 15)
+kill "$T_PID" 2>/dev/null || true; wait "$T_PID" 2>/dev/null || true
+trap - INT TERM EXIT
+THERM=$(tenant_cap_sum "$T_METRICS" 0); COOL=$(tenant_cap_sum "$T_METRICS" 1)
+if is_num "$THERM" && is_num "$COOL"; then
+  printf "  thermal-throttled GPU0 = %.0f W; non-throttled GPU1 = %.0f W\n" "$THERM" "$COOL"
+  if awk "BEGIN{exit !($THERM < $COOL)}"; then ok "thermal GPU backed off below its non-throttled peer"; else bad "thermal GPU not derated: g0=$THERM g1=$COOL"; fi
+else
+  bad "thermal-prs exported no per-GPU cap metrics (g0=$THERM g1=$COOL)"
+fi
+
 # DC4 — real GPU failsafe latency (hardware-gated).
 say "DC4: real-GPU failsafe latency"
 gate "requires a cap-capable GPU node (A10/B300/GB200) — run scripts/hw_failsafe.sh there"
