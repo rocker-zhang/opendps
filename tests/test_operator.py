@@ -1,4 +1,5 @@
 """Unit tests for the opendps Kubernetes operator."""
+
 from __future__ import annotations
 import sys
 from unittest.mock import MagicMock, patch
@@ -29,6 +30,7 @@ from opendps.operator.handlers import (  # noqa: E402
 # test_build_topology
 # ---------------------------------------------------------------------------
 
+
 def test_build_topology():
     topo = _build_topology("d0", [0, 1, 2], 3000.0, 100.0)
 
@@ -53,6 +55,7 @@ def test_build_topology():
 # ---------------------------------------------------------------------------
 # test_powerdomain_spec_validation — PermanentError on empty gpu_indices
 # ---------------------------------------------------------------------------
+
 
 def test_powerdomain_spec_validation_empty_gpu_indices():
     import kopf as _kopf
@@ -99,8 +102,12 @@ def test_powerpolicy_valid_brain(brain):
     patch_obj = MagicMock()
     patch_obj.status = {}
 
-    # _annotate_domain_configmap will hit k8s; stub it out
-    with patch("opendps.operator.handlers._annotate_domain_configmap"):
+    # Both writes hit the Kubernetes API; this unit test only verifies the
+    # accepted brain choices and status update.
+    with (
+        patch("opendps.operator.handlers._write_domain_params", return_value=True),
+        patch("opendps.operator.handlers._annotate_domain_configmap"),
+    ):
         on_powerpolicy_change(
             spec={"domainRef": "d0", "brain": brain, "intervalSeconds": 5.0},
             name="pp-test",

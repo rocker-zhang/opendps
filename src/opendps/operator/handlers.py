@@ -1,9 +1,12 @@
 """opendps Kubernetes operator — reconciles PowerDomain, PowerPolicy, JobPowerPolicy CRDs."""
+
 from __future__ import annotations
 import json
 import logging
 import os
+import random
 import time
+from typing import Any
 
 import kopf
 import kubernetes
@@ -15,11 +18,86 @@ CONFIG_MAP_NAME = os.getenv("OPENDPS_CONFIGMAP", "opendps-topology")
 NAMESPACE = os.getenv("OPENDPS_NAMESPACE", "opendps")
 # Config map holding all active JobPowerPolicy boosts (keyed by policy name)
 BOOST_CONFIG_MAP_NAME = os.getenv("OPENDPS_BOOST_CONFIGMAP", "opendps-job-boosts")
+GPU_INDICES_ANNOTATION = "opendps.io/gpu-indices"
+BOOST_SCHEMA_VERSION = 1
+RESOLVED_ASSIGNMENTS_KEY = "resolved-assignments.json"
+
+
+def _pod_gpu_indices(pod: Any) -> list[int] | None:
+    """Return explicitly assigned GPU indices, or None when not advertised.
+
+    Kubernetes does not expose device allocation through the Pod API.  The
+    operator therefore only publishes identities supplied explicitly by the
+    node-side allocator and never guesses from resource requests.
+    """
+    metadata = getattr(pod, "metadata", None)
+    annotations = getattr(metadata, "annotations", None) or {}
+    raw = annotations.get(GPU_INDICES_ANNOTATION)
+    if raw is None:
+        return None
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+
+    indices: list[int] = []
+    for item in raw.split(","):
+        token = item.strip()
+        if not token or not token.isascii() or not token.isdecimal():
+            return None
+        index = int(token)
+        if index < 0:
+            return None
+        indices.append(index)
+    if len(indices) != len(set(indices)):
+        return None
+    return sorted(indices)
+
+
+def _resolved_assignments(
+    pods: list[Any],
+    *,
+    policy_uid: str,
+    policy_generation: int,
+    priority_class: str,
+    boost_pct: float,
+) -> list[dict[str, Any]]:
+    assignments: list[dict[str, Any]] = []
+    for pod in pods:
+        metadata = getattr(pod, "metadata", None)
+        spec = getattr(pod, "spec", None)
+        pod_uid = getattr(metadata, "uid", None)
+        node_name = getattr(spec, "node_name", None)
+        if not pod_uid or not node_name:
+            continue
+        gpu_indices = _pod_gpu_indices(pod)
+        if gpu_indices is None:
+            continue
+        for gpu_index in gpu_indices:
+            assignments.append(
+                {
+                    "gpuBoostPct": boost_pct,
+                    "gpuIndex": gpu_index,
+                    "nodeName": str(node_name),
+                    "podUid": str(pod_uid),
+                    "policyGeneration": policy_generation,
+                    "policyUid": policy_uid,
+                    "priorityClass": priority_class,
+                }
+            )
+    return sorted(
+        assignments,
+        key=lambda item: (
+            item["nodeName"],
+            item["gpuIndex"],
+            item["podUid"],
+            item["policyUid"],
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
 # PowerDomain handlers
 # ---------------------------------------------------------------------------
+
 
 @kopf.on.create("opendps.io", "v1alpha1", "powerdomains")
 @kopf.on.update("opendps.io", "v1alpha1", "powerdomains")
@@ -39,7 +117,9 @@ def on_powerdomain_change(spec, name, namespace, status, patch, **kwargs):
 
     patch.status["phase"] = "Active"
     patch.status["lastUpdated"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    log.info("PowerDomain %s/%s reconciled: %d GPUs @ %.0fW", namespace, name, len(gpu_indices), budget_w)
+    log.info(
+        "PowerDomain %s/%s reconciled: %d GPUs @ %.0fW", namespace, name, len(gpu_indices), budget_w
+    )
 
 
 @kopf.on.delete("opendps.io", "v1alpha1", "powerdomains")
@@ -57,6 +137,7 @@ def on_powerdomain_delete(name, namespace, **kwargs):
 # ---------------------------------------------------------------------------
 # PowerPolicy handlers
 # ---------------------------------------------------------------------------
+
 
 @kopf.on.create("opendps.io", "v1alpha1", "powerpolicies")
 @kopf.on.update("opendps.io", "v1alpha1", "powerpolicies")
@@ -83,17 +164,26 @@ def on_powerpolicy_change(spec, name, namespace, patch, **kwargs):
     wrote = _write_domain_params(namespace, domain_ref, params)
 
     # Keep the lightweight annotation too (handy for `kubectl describe`).
-    _annotate_domain_configmap(namespace, domain_ref, {
-        "opendps.io/brain": brain,
-        "opendps.io/interval": str(interval),
-    })
+    _annotate_domain_configmap(
+        namespace,
+        domain_ref,
+        {
+            "opendps.io/brain": brain,
+            "opendps.io/interval": str(interval),
+        },
+    )
 
     patch.status["active"] = bool(wrote)
     patch.status["lastDecisionTs"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     log.info(
         "PowerPolicy %s/%s: domain=%s brain=%s capRaiseRate=%.0f ewmaAlpha=%.2f (params written=%s)",
-        namespace, name, domain_ref, brain,
-        params["cap_raise_rate_w_per_tick"], params["ewma_alpha"], wrote,
+        namespace,
+        name,
+        domain_ref,
+        brain,
+        params["cap_raise_rate_w_per_tick"],
+        params["ewma_alpha"],
+        wrote,
     )
 
 
@@ -101,9 +191,29 @@ def on_powerpolicy_change(spec, name, namespace, patch, **kwargs):
 # JobPowerPolicy handlers
 # ---------------------------------------------------------------------------
 
+
 @kopf.on.create("opendps.io", "v1alpha1", "jobpowerpolicies")
 @kopf.on.update("opendps.io", "v1alpha1", "jobpowerpolicies")
-def on_jobpowerpolicy_change(spec, name, namespace, patch, **kwargs):
+def on_jobpowerpolicy_change(spec, name, namespace, patch, meta=None, **kwargs):
+    matched, active = _reconcile_jobpowerpolicy(
+        spec,
+        name,
+        namespace,
+        meta=meta,
+    )
+    patch.status["matchedPods"] = matched
+    patch.status["activeBoosts"] = active
+
+
+def _reconcile_jobpowerpolicy(
+    spec: dict[str, Any],
+    name: str,
+    namespace: str,
+    *,
+    meta: dict[str, Any] | None = None,
+) -> tuple[int, int]:
+    """Resolve one policy, publish its assignments, and return status counts."""
+    meta = meta or {}
     match_labels = spec.get("matchLabels", {})
     boost_pct = float(spec.get("gpuBoostPct", 15.0))
     priority = spec.get("priorityClass", "normal")
@@ -113,31 +223,139 @@ def on_jobpowerpolicy_change(spec, name, namespace, patch, **kwargs):
     # which is unavailable in the driverless operator container. The GPU↔job
     # binding is done node-side by the agent's JobTracker; here we only resolve
     # how many workloads the policy currently applies to.
-    matched = _count_matching_pods(namespace, match_labels)
+    matched_pod_objects = _list_matching_pods(namespace, match_labels)
+    matched = len(matched_pod_objects)
+    resolved = _resolved_assignments(
+        matched_pod_objects,
+        policy_uid=str(meta.get("uid") or ""),
+        policy_generation=int(meta.get("generation") or 0),
+        priority_class=priority,
+        boost_pct=boost_pct,
+    )
 
     # Publish the boost policy to a ConfigMap the controller reads, so a busy
     # GPU running a matched job gets its cap boosted (consumed by JobAwarePRSBrain).
-    _write_boost_registry(namespace, name, {
-        "matchLabels": match_labels,
-        "gpu_boost_pct": boost_pct,
-        "priority": priority,
-        "matched_pods": matched,
-    })
+    _write_boost_registry(
+        namespace,
+        name,
+        {
+            "matchLabels": match_labels,
+            "gpu_boost_pct": boost_pct,
+            "priority": priority,
+            "matched_pods": matched,
+            "assignments": resolved,
+            "schemaVersion": BOOST_SCHEMA_VERSION,
+        },
+    )
 
     active = matched if boost_pct > 0.0 else 0
-    patch.status["matchedPods"] = matched
-    patch.status["activeBoosts"] = active
     log.info(
         "JobPowerPolicy %s/%s: labels=%s boost=%.0f%% priority=%s matchedPods=%d activeBoosts=%d",
-        namespace, name, match_labels, boost_pct, priority, matched, active,
+        namespace,
+        name,
+        match_labels,
+        boost_pct,
+        priority,
+        matched,
+        active,
     )
+    return matched, active
+
+
+@kopf.on.delete("opendps.io", "v1alpha1", "jobpowerpolicies")
+def on_jobpowerpolicy_delete(name, namespace, **kwargs):
+    """Remove the deleted policy without disturbing sibling registry entries."""
+    _write_boost_registry(namespace, name, None)
+
+
+def _pod_lifecycle_relevant(
+    body=None,
+    old=None,
+    new=None,
+    namespace: str | None = None,
+    **kwargs,
+) -> bool:
+    """Return whether a Pod event can change a published policy assignment."""
+
+    def assignment_fields(value: Any) -> tuple[Any, Any, Any]:
+        value = value if isinstance(value, dict) else {}
+        metadata = value.get("metadata") or {}
+        annotations = metadata.get("annotations") or {}
+        labels = metadata.get("labels") or {}
+        spec = value.get("spec") or {}
+        return annotations.get(GPU_INDICES_ANNOTATION), labels, spec.get("nodeName")
+
+    if isinstance(old, dict) and isinstance(new, dict):
+        if assignment_fields(old) == assignment_fields(new):
+            return False
+        candidates = (old, new)
+    else:
+        current = body if isinstance(body, dict) else new if isinstance(new, dict) else old
+        candidates = (current,)
+
+    fields = [assignment_fields(candidate) for candidate in candidates]
+    if any(annotation is not None for annotation, _labels, _node in fields):
+        return True
+    if not namespace:
+        return False
+
+    pod_labels = [labels for _annotation, labels, _node in fields if labels]
+    if not pod_labels:
+        return False
+    custom = kubernetes.client.CustomObjectsApi()
+    policies = custom.list_namespaced_custom_object(
+        "opendps.io",
+        "v1alpha1",
+        namespace,
+        "jobpowerpolicies",
+    )
+    for policy in policies.get("items", []):
+        selector = policy.get("spec", {}).get("matchLabels", {})
+        if selector and any(
+            all(labels.get(key) == value for key, value in selector.items())
+            for labels in pod_labels
+        ):
+            return True
+    return False
+
+
+@kopf.on.create("", "v1", "pods", when=_pod_lifecycle_relevant)
+@kopf.on.update("", "v1", "pods", when=_pod_lifecycle_relevant)
+@kopf.on.delete("", "v1", "pods", when=_pod_lifecycle_relevant)
+@kopf.on.resume("", "v1", "pods", when=_pod_lifecycle_relevant)
+def on_pod_lifecycle(namespace, **kwargs):
+    """Re-resolve policies after a relevant Pod assignment change."""
+    custom = kubernetes.client.CustomObjectsApi()
+    policies = custom.list_namespaced_custom_object(
+        "opendps.io",
+        "v1alpha1",
+        namespace,
+        "jobpowerpolicies",
+    )
+    for policy in sorted(
+        policies.get("items", []),
+        key=lambda item: item.get("metadata", {}).get("name", ""),
+    ):
+        metadata = policy.get("metadata", {})
+        name = metadata.get("name")
+        if not name:
+            continue
+        _reconcile_jobpowerpolicy(
+            policy.get("spec", {}),
+            name,
+            namespace,
+            meta=metadata,
+        )
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _build_topology(domain_name: str, gpu_indices: list[int], budget_w: float, overhead_w: float) -> dict:
+
+def _build_topology(
+    domain_name: str, gpu_indices: list[int], budget_w: float, overhead_w: float
+) -> dict:
     return {
         "pdus": {"pdu0": {"name": "pdu0", "capacity_w": budget_w * 1.2}},
         "domains": {
@@ -186,46 +404,142 @@ def _patch_or_create_cm(v1, namespace: str, cm_name: str, data: dict) -> None:
         v1.patch_namespaced_config_map(cm_name, namespace, {"data": data})
 
 
-def _count_matching_pods(namespace: str, match_labels: dict) -> int:
-    """Count pods in the namespace matching the given label selector.
+def _list_matching_pods(namespace: str, match_labels: dict) -> list[Any]:
+    """List pods in the namespace matching the given label selector.
 
-    In-pod safe: only calls the k8s API (pods list), never nvidia-smi. Returns 0
-    when no labels are given. Auth/permission failures (401/403) and other
-    non-transient API errors are re-raised so kopf surfaces and retries them
-    rather than silently reporting zero matches; only transient connection
-    blips degrade to 0.
+    In-pod safe: only calls the k8s API (pods list), never nvidia-smi. Returns []
+    when no labels are given. API and connection failures are propagated so a
+    transient outage can never be published as an empty assignment set.
     """
     if not match_labels:
-        return 0
-    selector = ",".join(f"{k}={v}" for k, v in match_labels.items())
+        return []
+    selector = ",".join(f"{key}={value}" for key, value in sorted(match_labels.items()))
     try:
         v1 = kubernetes.client.CoreV1Api()
         pods = v1.list_namespaced_pod(namespace, label_selector=selector)
-        return len(pods.items)
+        return list(pods.items)
     except kubernetes.client.exceptions.ApiException as e:
         if e.status in (401, 403, 404, 422):  # auth/permission/bad-request: surface it
             raise
-        log.warning("pod list failed for selector %r: %s", selector, e)
-        return 0
-    except Exception as e:  # transient connection error — degrade to 0
-        log.warning("pod list connection error for selector %r: %s", selector, e)
-        return 0
+        raise kopf.TemporaryError(
+            f"pod list failed for selector {selector!r}: {e}", delay=15
+        ) from e
+    except Exception as e:
+        raise kopf.TemporaryError(
+            f"pod list connection error for selector {selector!r}: {e}", delay=15
+        ) from e
 
 
-def _write_boost_registry(namespace: str, policy_name: str, entry: dict) -> None:
-    """Publish one JobPowerPolicy's boost entry into the shared boost-registry
-    ConfigMap (merge-patch on the policy-named key; preserves sibling policies).
+def _count_matching_pods(namespace: str, match_labels: dict) -> int:
+    """Return the number of matching pods for legacy callers and tests."""
+    return len(_list_matching_pods(namespace, match_labels))
 
-    This is the published, k8s-native record of the boost policy (and an audit
-    artifact). The process-mode controller derives live per-GPU boosts from its
-    JobTracker, not from this ConfigMap; a future in-cluster controller would
-    consume it directly.
+
+def _aggregate_resolved_assignments(data: dict[str, str]) -> str:
+    assignments: list[dict[str, Any]] = []
+    for key, raw in sorted(data.items()):
+        if key == RESOLVED_ASSIGNMENTS_KEY or not key.endswith(".json"):
+            continue
+        try:
+            policy = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            log.warning("Ignoring malformed boost registry entry %s", key)
+            continue
+        values = policy.get("assignments", [])
+        if isinstance(values, list):
+            assignments.extend(value for value in values if isinstance(value, dict))
+    assignments.sort(
+        key=lambda value: (
+            str(value.get("nodeName", "")),
+            (
+                value.get("gpuIndex", -1)
+                if isinstance(value.get("gpuIndex"), int)
+                and not isinstance(value.get("gpuIndex"), bool)
+                else -1
+            ),
+            str(value.get("podUid", "")),
+            str(value.get("policyUid", "")),
+        )
+    )
+    return json.dumps(
+        {"assignments": assignments, "schemaVersion": BOOST_SCHEMA_VERSION},
+        indent=2,
+        sort_keys=True,
+        separators=(",", ": "),
+    )
+
+
+def _write_boost_registry(namespace: str, policy_name: str, entry: dict | None) -> None:
+    """Publish one policy entry with a resource-versioned full replacement.
+
+    Each attempt reads the shared ConfigMap, updates the policy-named key and
+    aggregate assignment payload, then replaces the complete object using its
+    ``resourceVersion``. A missing ConfigMap is created. Conflicts are retried
+    with jitter and exhausted retries are rescheduled by kopf.
     """
     v1 = kubernetes.client.CoreV1Api()
-    _patch_or_create_cm(
-        v1, namespace, BOOST_CONFIG_MAP_NAME,
-        {f"{policy_name}.json": json.dumps(entry, indent=2)},
-    )
+    policy_key = f"{policy_name}.json"
+    for attempt in range(3):
+        try:
+            current = v1.read_namespaced_config_map(BOOST_CONFIG_MAP_NAME, namespace)
+        except kubernetes.client.exceptions.ApiException as exc:
+            if exc.status != 404:
+                raise
+            data: dict[str, str] = {}
+            if entry is not None:
+                data[policy_key] = json.dumps(
+                    entry, indent=2, sort_keys=True, separators=(",", ": ")
+                )
+            data[RESOLVED_ASSIGNMENTS_KEY] = _aggregate_resolved_assignments(data)
+            body = kubernetes.client.V1ConfigMap(
+                metadata=kubernetes.client.V1ObjectMeta(
+                    name=BOOST_CONFIG_MAP_NAME, namespace=namespace
+                ),
+                data=data,
+            )
+            try:
+                v1.create_namespaced_config_map(namespace, body)
+                return
+            except kubernetes.client.exceptions.ApiException as create_exc:
+                if create_exc.status == 409 and attempt < 2:
+                    time.sleep(random.uniform(0.01, 0.05))
+                    continue
+                if create_exc.status == 409:
+                    raise kopf.TemporaryError(
+                        f"boost registry {namespace}/{BOOST_CONFIG_MAP_NAME} "
+                        "remained conflicted after 3 attempts",
+                        delay=1,
+                    ) from create_exc
+                raise
+
+        data = dict(current.data or {})
+        if entry is None:
+            data.pop(policy_key, None)
+        else:
+            data[policy_key] = json.dumps(entry, indent=2, sort_keys=True, separators=(",", ": "))
+        data[RESOLVED_ASSIGNMENTS_KEY] = _aggregate_resolved_assignments(data)
+        body = kubernetes.client.V1ConfigMap(
+            metadata=kubernetes.client.V1ObjectMeta(
+                name=BOOST_CONFIG_MAP_NAME,
+                namespace=namespace,
+                resource_version=current.metadata.resource_version,
+            ),
+            data=data,
+        )
+        try:
+            v1.replace_namespaced_config_map(BOOST_CONFIG_MAP_NAME, namespace, body)
+            return
+        except kubernetes.client.exceptions.ApiException as exc:
+            if exc.status == 409 and attempt < 2:
+                time.sleep(random.uniform(0.01, 0.05))
+                continue
+            if exc.status == 409:
+                raise kopf.TemporaryError(
+                    f"boost registry {namespace}/{BOOST_CONFIG_MAP_NAME} "
+                    "remained conflicted after 3 attempts",
+                    delay=1,
+                ) from exc
+            raise
 
 
 def _write_domain_params(namespace: str, domain_name: str, params: dict) -> bool:
@@ -254,13 +568,15 @@ def _write_domain_params(namespace: str, domain_name: str, params: dict) -> bool
         raise
 
 
-def _annotate_domain_configmap(namespace: str, domain_name: str, annotations: dict[str, str]) -> None:
+def _annotate_domain_configmap(
+    namespace: str, domain_name: str, annotations: dict[str, str]
+) -> None:
     v1 = kubernetes.client.CoreV1Api()
     cm_name = f"{CONFIG_MAP_NAME}-{domain_name}"
     try:
-        v1.patch_namespaced_config_map(cm_name, namespace, {
-            "metadata": {"annotations": annotations}
-        })
+        v1.patch_namespaced_config_map(
+            cm_name, namespace, {"metadata": {"annotations": annotations}}
+        )
     except kubernetes.client.exceptions.ApiException as e:
         if e.status == 404:
             log.warning("ConfigMap %s not found for annotation; create PowerDomain first", cm_name)

@@ -48,8 +48,9 @@ opendps-controller --brain priority-prs --config <topology.json> \
 Unmapped GPUs default to `normal`; an unknown tier is rejected at brain
 construction, and `--gpu-priority-tiers` is only valid with `--brain
 priority-prs`. In k8s the same tiers come from `JobPowerPolicy.priorityClass`
-(captured by the operator into the `opendps-job-boosts` ConfigMap); wiring that
-ConfigMap into the in-cluster controller is the follow-up (tracked with N19).
+(resolved by the operator into the `opendps-job-boosts` ConfigMap). With the
+Kubernetes priority source enabled, the controller polls and applies those
+node-local assignments between control ticks.
 
 ## Demonstration
 
@@ -64,9 +65,65 @@ The check asserts `critical > normal > low`.
 
 ## Limitations
 
-- Tiers are supplied via CLI/JSON in process mode; the k8s
-  `priorityClass`→controller path lands with the in-cluster deployment (N19).
+- Process mode uses CLI/JSON tiers by default. Kubernetes assignment loading
+  requires `OPENDPS_PRIORITY_CONFIG_ENABLED=true` and the local node identity
+  in `OPENDPS_NODE_NAME`; the CLI mapping remains the baseline when both
+  sources are present.
 - Preemption is expressed through cap weighting, not hard job suspension — a
   low-tier GPU keeps its floor, it is not driven to zero.
 - Tier is a per-GPU attribute here; per-job tiering on a shared GPU is future
   work.
+
+## Kubernetes priority handoff
+
+`JobPowerPolicy.priorityClass` is resolved to concrete, node-local GPUs through
+the `opendps.io/gpu-indices` Pod annotation. The annotation is a comma-separated
+list such as `"0,2"`. Pods without a UID, assigned node, or valid annotation do
+not produce assignments.
+
+The operator publishes `resolved-assignments.json` in the
+`opendps-job-boosts` ConfigMap. Its versioned envelope is:
+
+```json
+{
+  "schemaVersion": 1,
+  "assignments": [
+    {
+      "policyUid": "example-policy",
+      "policyGeneration": 3,
+      "podUid": "example-pod",
+      "nodeName": "example-node",
+      "gpuIndex": 0,
+      "priorityClass": "high",
+      "gpuBoostPct": 20.0
+    }
+  ]
+}
+```
+
+The identifiers above are illustrative. Entries are deterministic and contain
+one record per resolved Pod/GPU pair.
+
+Each controller polls this ConfigMap and filters assignments to its configured
+node. When multiple assignments target one GPU, the highest priority tier
+wins. The CLI `--gpu-priority-tiers` mapping is the baseline; a resolved
+assignment overrides the same GPU, and unrelated CLI entries remain active.
+Updates are loaded between control ticks without restarting the controller.
+
+A `404` response or a valid empty assignment array restores the CLI baseline.
+Malformed payloads and other API failures preserve the last-known-good
+configuration.
+
+The CLI baseline may be empty when `OPENDPS_PRIORITY_CONFIG_ENABLED=true` and
+`OPENDPS_NODE_NAME` identifies the local node, allowing a dynamic-only
+`priority-prs` startup. The controller retains the existing validation when no
+dynamic source is configured.
+
+Pod lifecycle events recompute affected policy assignments, including late
+annotation and Pod deletion. The operator aggregates entries from all policies
+and uses resource-version compare-and-swap retries, so updating or deleting one
+policy does not discard a sibling policy's assignments.
+
+The annotation is an explicit demo-grade mapping, not automatic discovery of
+the devices allocated to a Pod. Device-plugin allocation introspection and
+Dynamic Resource Allocation integration remain future work.

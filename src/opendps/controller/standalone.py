@@ -42,7 +42,13 @@ from pathlib import Path
 
 from opendps.brain.dpm import BrainDecision, DPMBrain, DomainState
 from opendps.brain.prs import PRSBrain
+import os
+
 from opendps.controller.cluster_coordinator import NodeStateStore
+from opendps.controller.priority_config import (
+    PriorityConfigSource,
+    dynamic_priority_config_from_env,
+)
 from opendps.pdn.model import PDNTopology, from_dict
 from opendps.pdn.quota import QuotaConfig
 from opendps.sim.protocol import Actuator
@@ -67,15 +73,15 @@ class ControllerConfig:
     prom_url: str = "http://localhost:9090"
     interval_s: float = 5.0
     domain_names: list[str] = field(default_factory=list)  # empty = all domains
-    dry_run: bool = False                                   # log-only mode
-    sim_mode: bool = False                                  # if True, read telemetry from actuator
-    brain_type: str = "prs"                                 # "dpm" | "prs" | "job-prs"
-    metrics_port: int | None = None                         # Prometheus /metrics port (None = disabled)
-    actuator_type: str = "sim"                              # "sim" | "nvml" | "agent"
+    dry_run: bool = False  # log-only mode
+    sim_mode: bool = False  # if True, read telemetry from actuator
+    brain_type: str = "prs"  # "dpm" | "prs" | "job-prs"
+    metrics_port: int | None = None  # Prometheus /metrics port (None = disabled)
+    actuator_type: str = "sim"  # "sim" | "nvml" | "agent"
     agent_host: str = "127.0.0.1"
     agent_port: int = 9500
     # N5 — failsafe hardening / transient smoothing knobs (PRS-family brains)
-    cap_raise_rate_w_per_tick: float = 0.0                  # 0 = unlimited
+    cap_raise_rate_w_per_tick: float = 0.0  # 0 = unlimited
     ewma_alpha: float = 0.3
     # N6 — sim/demo: GPUs to mark busy for job-prs without nvidia-smi
     busy_gpus: list[int] = field(default_factory=list)
@@ -88,6 +94,7 @@ class ControllerConfig:
     quota_config: QuotaConfig | None = None
     # N15 — GPU index -> SLA tier (low/normal/high/critical) for --brain priority-prs.
     gpu_priority_tiers: dict[int, str] = field(default_factory=dict)
+    priority_config_source: PriorityConfigSource | None = None
     # Thermal-aware control (thermal-prs). Sim: GPUs to force thermal-throttled;
     # real: temperature (C) at/above which a GPU counts as thermal-throttling.
     thermal_throttled_gpus: list[int] = field(default_factory=list)
@@ -128,11 +135,13 @@ class StandaloneController:
         elif config.brain_type == "cvxpy":
             from opendps.brain.cvxpy_brain import CVXPYBrain
             from typing import Any
+
             self._brain: Any = CVXPYBrain(config.topology)
         elif config.brain_type == "job-prs":
             from opendps.agent.job_tracker import JobTracker
             from opendps.brain.job_aware_prs import JobAwarePRSBrain
             from typing import Any
+
             tracker = JobTracker()
             if config.busy_gpus:
                 # Sim/demo: no nvidia-smi available — seed a fixed busy set
@@ -169,7 +178,7 @@ class StandaloneController:
 
             from opendps.brain.priority_prs import PriorityTieredPRSBrain
 
-            if not config.gpu_priority_tiers:
+            if not config.gpu_priority_tiers and config.priority_config_source is None:
                 raise ValueError("--brain priority-prs requires --gpu-priority-tiers")
             self._brain: Any = PriorityTieredPRSBrain(
                 config.topology,
@@ -191,9 +200,7 @@ class StandaloneController:
             self._brain = DPMBrain(config.topology)
         # Only create a PromClient when draws actually come from Prometheus.
         _use_prom = not config.sim_mode and config.telemetry != "actuator"
-        self._client: PromClient | None = (
-            PromClient(config.prom_url) if _use_prom else None
-        )
+        self._client: PromClient | None = PromClient(config.prom_url) if _use_prom else None
         self._managed_domains: list[str] = (
             list(config.domain_names) if config.domain_names else list(config.topology.domains)
         )
@@ -242,7 +249,9 @@ class StandaloneController:
                     # for this (and later) domains — fall back to the topology budget.
                     log.warning(
                         "adopted-budget read failed for %s/%s; using topology budget",
-                        self._config.node_id, domain_name, exc_info=True,
+                        self._config.node_id,
+                        domain_name,
+                        exc_info=True,
                     )
                     adopted = None
                 if adopted is not None and adopted >= self._config.adopted_budget_min_w:
@@ -273,9 +282,7 @@ class StandaloneController:
                         log.warning("GPU %d not in Prometheus sample, skipping", idx)
                         continue
                     gpu_draws[idx] = g.power_draw_w if g.power_draw_w is not None else 0.0
-                    gpu_caps[idx] = (
-                        g.power_limit_w if g.power_limit_w is not None else fallback_cap
-                    )
+                    gpu_caps[idx] = g.power_limit_w if g.power_limit_w is not None else fallback_cap
                     gpu_max_caps[idx] = (
                         g.power_max_limit_w if g.power_max_limit_w is not None else fallback_cap
                     )
@@ -317,7 +324,7 @@ class StandaloneController:
             if not self._config.dry_run:
                 # Check the class (not the instance) so MagicMock in tests doesn't
                 # shadow the real method check via __getattr__.
-                if callable(getattr(type(self._config.actuator), 'push_all_caps', None)):
+                if callable(getattr(type(self._config.actuator), "push_all_caps", None)):
                     self._config.actuator.push_all_caps(decision.caps)
                 else:
                     for gpu_idx, cap_w in decision.caps.items():
@@ -348,12 +355,17 @@ class StandaloneController:
                 )
 
             # Emit as JSONL (one line per domain per tick).
-            print(json.dumps({
-                "ts": decision.ts,
-                "domain": decision.domain,
-                "caps": {str(k): v for k, v in decision.caps.items()},
-                "reason": decision.reason,
-            }), flush=True)
+            print(
+                json.dumps(
+                    {
+                        "ts": decision.ts,
+                        "domain": decision.domain,
+                        "caps": {str(k): v for k, v in decision.caps.items()},
+                        "reason": decision.reason,
+                    }
+                ),
+                flush=True,
+            )
 
         # Advance sim state at the end of each tick so the next read reflects
         # the effect of the caps that were just applied.
@@ -368,7 +380,9 @@ class StandaloneController:
         report: dict[str, float] = {}
         if self._config.quota_config is not None:
             for tenant in self._config.quota_config.tenants:
-                report[tenant.tenant_id] = self._energy.tenant_energy_wh(tenant.gpu_indices) / 1000.0
+                report[tenant.tenant_id] = (
+                    self._energy.tenant_energy_wh(tenant.gpu_indices) / 1000.0
+                )
         return report
 
     def run(self) -> None:
@@ -379,22 +393,31 @@ class StandaloneController:
         """
         log.info(
             "StandaloneController started — interval=%.1fs dry_run=%s sim_mode=%s domains=%s",
-            self._config.interval_s,
-            self._config.dry_run,
-            self._config.sim_mode,
+            getattr(self._config, "interval_s", 5.0),
+            getattr(self._config, "dry_run", False),
+            getattr(self._config, "sim_mode", False),
             self._managed_domains,
         )
         while True:
             try:
+                priority_source = getattr(self._config, "priority_config_source", None)
+                if priority_source is not None:
+                    set_tiers = getattr(self._brain, "set_tiers", None)
+                    if not callable(set_tiers):
+                        raise TypeError(
+                            "configured priority source requires a brain with set_tiers()"
+                        )
+                    set_tiers(priority_source.poll())
                 self.run_once()
             except Exception as exc:  # noqa: BLE001
                 log.error("tick error: %s", exc)
-            time.sleep(self._config.interval_s)
+            time.sleep(getattr(self._config, "interval_s", 5.0))
 
 
 # ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
+
 
 def main(argv: list[str] | None = None) -> int:
     """Entry point for the ``opendps-controller`` CLI."""
@@ -481,8 +504,12 @@ def main(argv: list[str] | None = None) -> int:
             "agent = TCP to opendps-agent Rust process at --agent-host:--agent-port"
         ),
     )
-    parser.add_argument("--agent-host", default="127.0.0.1", help="opendps-agent host (--actuator agent)")
-    parser.add_argument("--agent-port", type=int, default=9500, help="opendps-agent port (--actuator agent)")
+    parser.add_argument(
+        "--agent-host", default="127.0.0.1", help="opendps-agent host (--actuator agent)"
+    )
+    parser.add_argument(
+        "--agent-port", type=int, default=9500, help="opendps-agent port (--actuator agent)"
+    )
     parser.add_argument(
         "--cap-raise-rate",
         type=float,
@@ -560,13 +587,21 @@ def main(argv: list[str] | None = None) -> int:
                 "or place quota.json next to --config"
             )
 
+    priority_config_enabled = False
+    priority_config_node = None
+    if args.brain == "priority-prs":
+        try:
+            priority_config_enabled, priority_config_node = dynamic_priority_config_from_env()
+        except ValueError as exc:
+            parser.error(str(exc))
+
     # N15 — GPU -> SLA tier map for priority-prs.
     if args.gpu_priority_tiers is not None and args.brain != "priority-prs":
         parser.error("--gpu-priority-tiers is only used by --brain priority-prs")
     gpu_priority_tiers: dict[int, str] = {}
-    if args.brain == "priority-prs":
-        if not args.gpu_priority_tiers:
-            parser.error("--brain priority-prs requires --gpu-priority-tiers")
+    if args.brain == "priority-prs" and not args.gpu_priority_tiers and not priority_config_enabled:
+        parser.error("--brain priority-prs requires --gpu-priority-tiers")
+    if args.brain == "priority-prs" and args.gpu_priority_tiers:
         try:
             raw = json.loads(args.gpu_priority_tiers)
             gpu_priority_tiers = {int(k): str(v) for k, v in raw.items()}
@@ -604,18 +639,24 @@ def main(argv: list[str] | None = None) -> int:
     if args.actuator == "nvml":
         try:
             from opendps.agent.nvml_agent import NvmlActuator
+
             actuator = NvmlActuator()
             log.info("Using NvmlActuator (real GPU caps via pynvml)")
         except Exception as exc:
             log.error("NvmlActuator init failed: %s — falling back to sim", exc)
             from opendps.sim.presets import oversub_scenario
+
             actuator = oversub_scenario(n_gpus=topology.total_gpu_count())
     elif args.actuator == "agent":
         from opendps.controller.agent_bridge import AgentBridgeActuator
+
         actuator = AgentBridgeActuator(host=args.agent_host, port=args.agent_port)
-        log.info("Using AgentBridgeActuator → opendps-agent at %s:%d", args.agent_host, args.agent_port)
+        log.info(
+            "Using AgentBridgeActuator → opendps-agent at %s:%d", args.agent_host, args.agent_port
+        )
     else:
         from opendps.sim.presets import oversub_scenario  # local import avoids circular refs
+
         actuator = oversub_scenario(n_gpus=topology.total_gpu_count())
         log.info("Using SimBackend (--actuator sim)")
 
@@ -641,12 +682,25 @@ def main(argv: list[str] | None = None) -> int:
         thermal_throttled_gpus=hot_gpus,
         thermal_throttle_temp_c=args.thermal_throttle_temp_c,
     )
+    if priority_config_enabled:
+        namespace = os.environ.get("POD_NAMESPACE", "").strip()
+        if not namespace:
+            parser.error("POD_NAMESPACE is required when dynamic priority config is enabled")
+        cfg.priority_config_source = PriorityConfigSource(
+            namespace=namespace,
+            node_name=priority_config_node,
+            baseline=cfg.gpu_priority_tiers,
+        )
+        # Load an existing assignment before the first decision; subsequent
+        # iterations refresh only when the ConfigMap resourceVersion changes.
+        cfg.priority_config_source.poll()
     StandaloneController(cfg).run()
     return 0
 
 
-def _domain_stats(gpu_draws: dict[int, float], caps: dict[int, float],
-                  hot_threshold: float = 0.6) -> dict:
+def _domain_stats(
+    gpu_draws: dict[int, float], caps: dict[int, float], hot_threshold: float = 0.6
+) -> dict:
     """Brain-agnostic per-domain stats for Prometheus.
 
     A GPU is "idle" when draw/cap < hot_threshold. Stranded watts are the unused
@@ -721,8 +775,7 @@ def _validate_quota_against_topology(quota: QuotaConfig, topology: PDNTopology) 
     """
     if quota.domain_name not in topology.domains:
         raise ValueError(
-            f"quota domain {quota.domain_name!r} not in topology domains "
-            f"{sorted(topology.domains)}"
+            f"quota domain {quota.domain_name!r} not in topology domains {sorted(topology.domains)}"
         )
     domain_gpus = set(topology.domains[quota.domain_name].gpu_indices)
     for t in quota.tenants:

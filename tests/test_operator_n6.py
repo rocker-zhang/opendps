@@ -4,6 +4,7 @@ Operator side: JobPowerPolicy reconcile counts *real* matching pods (not a
 hardcoded 0) and publishes a boost registry. Brain side: JobAwarePRSBrain
 boosts a GPU that the tracker reports busy.
 """
+
 from __future__ import annotations
 
 import sys
@@ -39,6 +40,7 @@ def _pod_list(n):
 # _count_matching_pods — must return the REAL count, distinguishable from a stub
 # ---------------------------------------------------------------------------
 
+
 def test_count_matching_pods_returns_real_count():
     api = MagicMock()
     api.list_namespaced_pod.return_value = _pod_list(3)
@@ -63,8 +65,10 @@ def test_on_jobpowerpolicy_writes_real_matchedpods_and_registry():
     patch_obj.status = {}
     api = MagicMock()
     api.list_namespaced_pod.return_value = _pod_list(2)
-    with patch.object(handlers.kubernetes.client, "CoreV1Api", return_value=api), \
-         patch("opendps.operator.handlers._write_boost_registry") as wbr:
+    with (
+        patch.object(handlers.kubernetes.client, "CoreV1Api", return_value=api),
+        patch("opendps.operator.handlers._write_boost_registry") as wbr,
+    ):
         on_jobpowerpolicy_change(
             spec={
                 "matchLabels": {"opendps.io/workload": "training"},
@@ -89,8 +93,10 @@ def test_on_jobpowerpolicy_zero_boost_no_active():
     patch_obj.status = {}
     api = MagicMock()
     api.list_namespaced_pod.return_value = _pod_list(5)
-    with patch.object(handlers.kubernetes.client, "CoreV1Api", return_value=api), \
-         patch("opendps.operator.handlers._write_boost_registry"):
+    with (
+        patch.object(handlers.kubernetes.client, "CoreV1Api", return_value=api),
+        patch("opendps.operator.handlers._write_boost_registry"),
+    ):
         on_jobpowerpolicy_change(
             spec={"matchLabels": {"a": "b"}, "gpuBoostPct": 0.0},
             name="jpp-zero",
@@ -104,6 +110,7 @@ def test_on_jobpowerpolicy_zero_boost_no_active():
 # ---------------------------------------------------------------------------
 # Brain side — JobAwarePRSBrain boosts a busy GPU
 # ---------------------------------------------------------------------------
+
 
 def test_job_aware_brain_boosts_busy_gpu():
     import time
@@ -141,3 +148,94 @@ def test_set_busy_gpus_marks_busy():
     assert tracker.is_gpu_busy(2)
     assert tracker.is_gpu_busy(5)
     assert not tracker.is_gpu_busy(0)
+
+
+def _resolved_pod(uid, node_name, gpu_indices):
+    from types import SimpleNamespace
+
+    annotations = {}
+    if gpu_indices is not None:
+        annotations[handlers.GPU_INDICES_ANNOTATION] = gpu_indices
+    return SimpleNamespace(
+        metadata=SimpleNamespace(uid=uid, annotations=annotations),
+        spec=SimpleNamespace(node_name=node_name),
+    )
+
+
+def test_resolved_assignments_contract_is_sorted_and_complete():
+    pods = [
+        _resolved_pod("pod-z", "node-b", "2,0"),
+        _resolved_pod("pod-a", "node-a", "1"),
+    ]
+
+    assignments = handlers._resolved_assignments(
+        pods,
+        policy_uid="policy-uid",
+        policy_generation=7,
+        priority_class="high",
+        boost_pct=20.0,
+    )
+
+    assert assignments == [
+        {
+            "policyUid": "policy-uid",
+            "policyGeneration": 7,
+            "podUid": "pod-a",
+            "nodeName": "node-a",
+            "gpuIndex": 1,
+            "priorityClass": "high",
+            "gpuBoostPct": 20.0,
+        },
+        {
+            "policyUid": "policy-uid",
+            "policyGeneration": 7,
+            "podUid": "pod-z",
+            "nodeName": "node-b",
+            "gpuIndex": 0,
+            "priorityClass": "high",
+            "gpuBoostPct": 20.0,
+        },
+        {
+            "policyUid": "policy-uid",
+            "policyGeneration": 7,
+            "podUid": "pod-z",
+            "nodeName": "node-b",
+            "gpuIndex": 2,
+            "priorityClass": "high",
+            "gpuBoostPct": 20.0,
+        },
+    ]
+
+
+def test_resolved_assignments_skip_unresolved_and_malformed_pods():
+    pods = [
+        _resolved_pod("missing", "node-a", None),
+        _resolved_pod("malformed", "node-a", "not-an-index"),
+        _resolved_pod("unscheduled", None, "0"),
+        _resolved_pod("valid", "node-b", "3"),
+    ]
+
+    assignments = handlers._resolved_assignments(
+        pods,
+        policy_uid="policy-uid",
+        policy_generation=1,
+        priority_class="normal",
+        boost_pct=15.0,
+    )
+
+    assert assignments == [
+        {
+            "policyUid": "policy-uid",
+            "policyGeneration": 1,
+            "podUid": "valid",
+            "nodeName": "node-b",
+            "gpuIndex": 3,
+            "priorityClass": "normal",
+            "gpuBoostPct": 15.0,
+        }
+    ]
+
+
+def test_gpu_index_annotation_rejects_duplicates_and_negative_indices():
+    assert handlers._pod_gpu_indices(_resolved_pod("duplicate", "node-a", "1,1")) is None
+    assert handlers._pod_gpu_indices(_resolved_pod("negative", "node-a", "-1")) is None

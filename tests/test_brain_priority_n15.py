@@ -3,6 +3,7 @@
 Under power contention, higher-tier GPUs keep more cap than equally-loaded
 lower-tier GPUs, no GPU is starved below the floor, and the domain budget is
 never exceeded."""
+
 from __future__ import annotations
 
 import time
@@ -20,7 +21,7 @@ def _contended_state(n=4, draw=500.0, cap=600.0):
     return DomainState(
         domain_name=DOMAIN,
         gpu_draws={i: draw for i in range(n)},
-        gpu_caps={i: cap for i in range(n)},     # draw/cap = 0.83 >= 0.6 -> contended
+        gpu_caps={i: cap for i in range(n)},  # draw/cap = 0.83 >= 0.6 -> contended
         gpu_max_caps={i: 1000.0 for i in range(n)},
         ts=time.time(),
     )
@@ -60,6 +61,17 @@ def test_unknown_tier_rejected():
         _brain({0: "platinum"})
 
 
+def test_set_tiers_replaces_mapping_and_validates_before_swap():
+    brain = _brain({0: "low"})
+    brain.set_tiers({0: "critical"})
+    decision = brain.decide(DOMAIN, _contended_state())
+    assert decision.caps[0] > decision.caps[1]
+
+    with pytest.raises(ValueError, match="unknown priority tier"):
+        brain.set_tiers({0: "platinum"})
+    assert brain.decide(DOMAIN, _contended_state()).caps == decision.caps
+
+
 def test_idle_high_tier_gpu_not_boosted():
     """Tier does not boost an *idle* GPU: an idle critical GPU gets no more than
     an equally-idle normal peer (both stay at the PRS floor)."""
@@ -80,7 +92,12 @@ def test_idle_high_tier_gpu_not_boosted():
 
 
 def test_tier_weights_are_monotonic():
-    assert TIER_WEIGHTS["low"] < TIER_WEIGHTS["normal"] < TIER_WEIGHTS["high"] < TIER_WEIGHTS["critical"]
+    assert (
+        TIER_WEIGHTS["low"]
+        < TIER_WEIGHTS["normal"]
+        < TIER_WEIGHTS["high"]
+        < TIER_WEIGHTS["critical"]
+    )
 
 
 # --- controller / CLI ---
@@ -109,27 +126,61 @@ def test_controller_priority_prs_end_to_end():
     assert sum(caps.values()) <= 3600.0 + 1.0
 
 
-def test_cli_priority_prs_requires_tiers(tmp_path):
+def test_cli_priority_prs_requires_tiers(tmp_path, monkeypatch):
     import json
 
     from opendps.controller.standalone import main
 
     topo = tmp_path / "topo.json"
-    topo.write_text(json.dumps({
-        "pdus": {"p": {"name": "p", "capacity_w": 9000.0, "derating": 0.9}},
-        "domains": {"domain0": {"name": "domain0", "budget_w": 8000.0,
-                                "gpu_indices": [0, 1], "pdu_name": "p", "priority": 0}},
-    }))
+    topo.write_text(
+        json.dumps(
+            {
+                "pdus": {"p": {"name": "p", "capacity_w": 9000.0, "derating": 0.9}},
+                "domains": {
+                    "domain0": {
+                        "name": "domain0",
+                        "budget_w": 8000.0,
+                        "gpu_indices": [0, 1],
+                        "pdu_name": "p",
+                        "priority": 0,
+                    }
+                },
+            }
+        )
+    )
     with pytest.raises(SystemExit):
         main(["--sim", "--brain", "priority-prs", "--config", str(topo)])
     # tiers with a non-priority brain is also a clean error
     with pytest.raises(SystemExit):
-        main(["--sim", "--brain", "prs", "--config", str(topo),
-              "--gpu-priority-tiers", '{"0":"high"}'])
+        main(
+            [
+                "--sim",
+                "--brain",
+                "prs",
+                "--config",
+                str(topo),
+                "--gpu-priority-tiers",
+                '{"0":"high"}',
+            ]
+        )
     # an empty mapping is a clean CLI error, not a raw ValueError later
     with pytest.raises(SystemExit):
-        main(["--sim", "--brain", "priority-prs", "--config", str(topo),
-              "--gpu-priority-tiers", "{}"])
+        main(
+            [
+                "--sim",
+                "--brain",
+                "priority-prs",
+                "--config",
+                str(topo),
+                "--gpu-priority-tiers",
+                "{}",
+            ]
+        )
+    monkeypatch.setenv("OPENDPS_PRIORITY_CONFIG_ENABLED", "true")
+    monkeypatch.setenv("OPENDPS_NODE_NAME", "node-a")
+    monkeypatch.delenv("POD_NAMESPACE", raising=False)
+    with pytest.raises(SystemExit):
+        main(["--sim", "--brain", "priority-prs", "--config", str(topo)])
 
 
 def test_never_oversubscribes_when_floors_infeasible():
@@ -146,11 +197,31 @@ def test_cli_rejects_tier_for_unknown_gpu(tmp_path):
     from opendps.controller.standalone import main
 
     topo = tmp_path / "topo.json"
-    topo.write_text(json.dumps({
-        "pdus": {"p": {"name": "p", "capacity_w": 9000.0, "derating": 0.9}},
-        "domains": {"domain0": {"name": "domain0", "budget_w": 8000.0,
-                                "gpu_indices": [0, 1], "pdu_name": "p", "priority": 0}},
-    }))
+    topo.write_text(
+        json.dumps(
+            {
+                "pdus": {"p": {"name": "p", "capacity_w": 9000.0, "derating": 0.9}},
+                "domains": {
+                    "domain0": {
+                        "name": "domain0",
+                        "budget_w": 8000.0,
+                        "gpu_indices": [0, 1],
+                        "pdu_name": "p",
+                        "priority": 0,
+                    }
+                },
+            }
+        )
+    )
     with pytest.raises(SystemExit):  # GPU 99 not in the topology
-        main(["--sim", "--brain", "priority-prs", "--config", str(topo),
-              "--gpu-priority-tiers", '{"99":"critical"}'])
+        main(
+            [
+                "--sim",
+                "--brain",
+                "priority-prs",
+                "--config",
+                str(topo),
+                "--gpu-priority-tiers",
+                '{"99":"critical"}',
+            ]
+        )

@@ -59,15 +59,68 @@ renormalisation keeps `Σcaps` within the domain budget, so it converges to a
 higher steady-state share rather than running away. The demo's directional
 assertion (busy > no-job) holds at any tick count.
 
-## Limitations (not yet wired)
+## Limitations
 
-- **Operator → controller handoff**: the operator reconciles `JobPowerPolicy`
-  CRs and writes `gpuBoostPct`/`priorityClass` into the `opendps-job-boosts`
-  ConfigMap, but the standalone controller does not yet read that ConfigMap; the
-  boost is supplied via `--priority-boost` / `params.json`. Closing this loop
-  (hot-reloading per-policy boosts) is the next N12 step.
-- **`priorityClass` tiers** (low/normal/high/critical) are captured in the CRD
-  but not yet mapped to distinct boost fractions — every busy GPU gets the same
-  boost.
+- Kubernetes priority loading requires
+  `OPENDPS_PRIORITY_CONFIG_ENABLED=true` and the local node identity in
+  `OPENDPS_NODE_NAME`. Without that explicit configuration, the controller
+  performs no ConfigMap reads and continues to use its CLI baseline.
+- N12's single busy-GPU boost path applies one boost fraction to every busy GPU.
+  N15 adds distinct low/normal/high/critical tier weights for priority-aware
+  allocation.
 - Boost is GPU-level (busy/idle), not per-job; multiple jobs on one GPU share
   the single boost.
+
+## Resolved GPU assignments
+
+The Kubernetes handoff uses an explicit Pod annotation:
+
+```yaml
+metadata:
+  annotations:
+    opendps.io/gpu-indices: "0,2"
+```
+
+The value is a comma-separated list of GPU indices on the Pod's assigned node.
+The operator accepts only unique, non-negative decimal indices. A Pod without a
+node name, UID, or valid annotation is not published as a resolved assignment.
+
+For every resolved Pod/GPU pair, the operator writes one entry to
+`resolved-assignments.json` in the `opendps-job-boosts` ConfigMap. The payload
+has `schemaVersion: 1` and an `assignments` array. Each assignment contains:
+
+- `policyUid` and `policyGeneration`
+- `podUid`, `nodeName`, and `gpuIndex`
+- `priorityClass` and `gpuBoostPct`
+
+Entries are sorted deterministically. The controller reads only assignments
+whose `nodeName` matches its configured node, so GPU indices remain node-local.
+
+This annotation is a demo-grade, explicit identity mapping. It makes the
+policy-to-device handoff auditable without claiming that a Pod's allocated
+devices can always be inferred from the Kubernetes API. Automatic mapping from
+device-plugin allocation data or Dynamic Resource Allocation remains future
+work.
+
+## Controller reload and fallback
+
+The controller polls the ConfigMap and applies resolved priority tiers without
+a process restart. `--gpu-priority-tiers` remains the baseline: dynamic
+assignments override the same GPU index, while baseline entries for other GPUs
+remain in effect.
+
+A valid empty assignment set or a missing ConfigMap (`404`) restores the CLI
+baseline. Malformed data and non-`404` API failures retain the last-known-good
+snapshot. This avoids replacing a valid policy with a partial or unreadable
+update.
+
+When `OPENDPS_PRIORITY_CONFIG_ENABLED=true` and `OPENDPS_NODE_NAME` identifies
+the local node, the CLI baseline may be empty; resolved assignments can
+populate the priority brain after startup. Without a dynamic source,
+`priority-prs` still requires an explicit CLI tier mapping.
+
+Pod lifecycle events trigger reconciliation of the namespace's
+`JobPowerPolicy` objects. This covers Pods that receive the GPU annotation
+after policy creation and removes assignments when Pods disappear. Registry
+updates use the ConfigMap resource version and retry conflicts, while
+preserving assignments owned by sibling policies.
