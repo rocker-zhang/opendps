@@ -378,3 +378,31 @@ runs per GPU regardless; showback is empty without a quota config. Design doc:
 
 **Done-when**: per-tenant cumulative kWh is attributed and a busy tenant accrues
 more than an idle one. ✅ (`tests/test_energy_n20.py`)
+
+## N21 — Dynamic Kubernetes priority handoff
+
+**Status**: implemented and covered by unit and fake-API integration tests;
+live Kubernetes validation remains pending.
+
+The N12/N15 path now carries `JobPowerPolicy` priority into the controller:
+
+- Pods identify node-local GPU indices with the explicit
+  `opendps.io/gpu-indices` annotation.
+- The operator publishes deterministic, schema-versioned assignments in
+  `opendps-job-boosts/resolved-assignments.json`.
+- Controllers filter assignments by node and hot-load changes between control
+  ticks.
+- CLI priority tiers remain the baseline. Valid empty data and `404` restore
+  that baseline; malformed data and other API failures retain the
+  last-known-good snapshot.
+- Kubernetes-backed priority mode also supports an empty CLI baseline for
+  dynamic-only startup when `OPENDPS_PRIORITY_CONFIG_ENABLED=true` and
+  `OPENDPS_NODE_NAME` identifies the local node; non-dynamic mode retains the
+  explicit-tier validation and performs no ConfigMap reads.
+- Pod lifecycle reconciliation handles late annotations and deletion. Registry
+  writes aggregate policy entries and retry resource-version conflicts without
+  dropping sibling assignments.
+
+The explicit annotation is suitable for the current demo path. Automatic
+device-plugin or Dynamic Resource Allocation identity mapping remains a future
+integration.
