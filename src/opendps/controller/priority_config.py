@@ -63,7 +63,6 @@ class PriorityConfigSource:
         self._resource_version: str | None = None
         self._api = api
         self._request_timeout_s = request_timeout_s
-        self._disabled = False
         self._reported_unavailable = False
 
     def snapshot(self) -> Mapping[int, str]:
@@ -129,11 +128,16 @@ class PriorityConfigSource:
         self._snapshot = MappingProxyType(merged)
         self._resource_version = resource_version
         self._reported_unavailable = False
+        tiers = ",".join(f"{gpu}={tier}" for gpu, tier in sorted(merged.items())) or "none"
+        log.info(
+            "Priority configuration applied: resourceVersion=%s node=%s tiers=%s",
+            resource_version,
+            self._node_name,
+            tiers,
+        )
         return self._snapshot
 
     def _get_api(self) -> Any | None:
-        if self._disabled:
-            return None
         if self._api is not None:
             return self._api
         try:
@@ -142,10 +146,10 @@ class PriorityConfigSource:
             config.load_incluster_config()
             self._api = client.CoreV1Api()
         except Exception as exc:
-            self._disabled = True
             if not self._reported_unavailable:
                 log.info(
-                    "Kubernetes priority configuration unavailable; using CLI priority tiers: %s",
+                    "Kubernetes priority configuration unavailable; using the "
+                    "last-known-good priority tiers and retrying: %s",
                     exc,
                 )
                 self._reported_unavailable = True

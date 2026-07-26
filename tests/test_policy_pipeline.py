@@ -1,5 +1,6 @@
 import json
 import importlib
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -37,7 +38,7 @@ class RegistryApi:
             raise FakeKubeError(status=404)
         return self.config_map
 
-    def list_namespaced_pod(self, namespace, label_selector):
+    def list_namespaced_pod(self, namespace, label_selector=None):
         return SimpleNamespace(items=list(self.pods))
 
     def patch_namespaced_config_map(self, name, namespace, body):
@@ -184,7 +185,18 @@ def test_pod_late_annotation_and_delete_recompute_aggregate():
             return_value=custom_api,
         ),
     ):
-        handlers.on_pod_lifecycle(namespace="training")
+        event_body = {
+            "metadata": {
+                "uid": "pod-a",
+                "labels": {"job": "a"},
+                "annotations": {},
+            },
+            "spec": {"nodeName": "node-a"},
+        }
+        handlers.on_pod_event(
+            event={"type": "ADDED", "object": event_body},
+            namespace="training",
+        )
         payload = json.loads(api.config_map.data[handlers.RESOLVED_ASSIGNMENTS_KEY])
         assert payload["assignments"] == []
 
@@ -199,38 +211,298 @@ def test_pod_late_annotation_and_delete_recompute_aggregate():
             )
         ]
         assert handlers._pod_gpu_indices(api.pods[0]) == [0]
-        handlers.on_pod_lifecycle(namespace="training")
+        annotated_body = {
+            **event_body,
+            "metadata": {
+                **event_body["metadata"],
+                "annotations": {handlers.GPU_INDICES_ANNOTATION: "0"},
+            },
+        }
+        handlers.on_pod_event(
+            event={"type": "MODIFIED", "object": annotated_body},
+            namespace="training",
+        )
         payload = json.loads(api.config_map.data[handlers.RESOLVED_ASSIGNMENTS_KEY])
         assert len(payload["assignments"]) == 1
 
         api.pods = []
-        handlers.on_pod_lifecycle(namespace="training")
+        handlers.on_pod_event(
+            event={"type": "DELETED", "object": annotated_body},
+            namespace="training",
+        )
         payload = json.loads(api.config_map.data[handlers.RESOLVED_ASSIGNMENTS_KEY])
         assert payload["assignments"] == []
 
 
-def test_pod_lifecycle_predicate_ignores_status_only_updates():
+def test_pod_event_ignores_status_only_updates():
     pod = {
         "metadata": {
+            "uid": "pod-a",
             "annotations": {handlers.GPU_INDICES_ANNOTATION: "0"},
             "labels": {"job": "a"},
         },
         "spec": {"nodeName": "node-a"},
     }
 
-    assert not handlers._pod_lifecycle_relevant(
-        old={**pod, "status": {"phase": "Pending"}},
-        new={**pod, "status": {"phase": "Running"}},
-        namespace="training",
+    with (
+        patch.object(handlers, "_pod_matches_assignment_policy", return_value=True),
+        patch.object(handlers, "_reconcile_jobpowerpolicies_for_namespace") as reconcile,
+    ):
+        handlers.on_pod_event(
+            event={"type": "ADDED", "object": {**pod, "status": {"phase": "Pending"}}},
+            namespace="training",
+        )
+        handlers.on_pod_event(
+            event={"type": "MODIFIED", "object": {**pod, "status": {"phase": "Running"}}},
+            namespace="training",
+        )
+
+    reconcile.assert_called_once_with("training")
+
+
+def test_pod_event_annotation_removal_and_delete_recompute():
+    annotated = {
+        "metadata": {
+            "uid": "pod-a",
+            "annotations": {handlers.GPU_INDICES_ANNOTATION: "0"},
+            "labels": {"job": "a"},
+        },
+        "spec": {"nodeName": "node-a"},
+    }
+    unannotated = {
+        **annotated,
+        "metadata": {**annotated["metadata"], "annotations": {}},
+    }
+
+    with (
+        patch.object(handlers, "_pod_matches_assignment_policy", return_value=True),
+        patch.object(handlers, "_reconcile_jobpowerpolicies_for_namespace") as reconcile,
+    ):
+        handlers.on_pod_event(
+            event={"type": "ADDED", "object": annotated},
+            namespace="training",
+        )
+        handlers.on_pod_event(
+            event={"type": "MODIFIED", "object": unannotated},
+            namespace="training",
+        )
+        handlers.on_pod_event(
+            event={"type": "DELETED", "object": unannotated},
+            namespace="training",
+        )
+
+    assert reconcile.call_count == 3
+    assert "pod-a" not in handlers._POD_ASSIGNMENT_DIGESTS
+
+
+def test_pod_event_delete_rechecks_policy_after_cached_irrelevant():
+    body = {
+        "metadata": {
+            "uid": "pod-a",
+            "annotations": {},
+            "labels": {"job": "a"},
+        },
+        "spec": {"nodeName": "node-a"},
+    }
+    handlers._POD_ASSIGNMENT_DIGESTS["pod-a"] = (
+        handlers._pod_assignment_digest(body),
+        False,
+        "training",
     )
 
+    with (
+        patch.object(handlers, "_pod_matches_assignment_policy", return_value=True),
+        patch.object(handlers, "_reconcile_jobpowerpolicies_for_namespace") as reconcile,
+    ):
+        handlers.on_pod_event(
+            event={"type": "DELETED", "object": body},
+            namespace="training",
+        )
 
-def test_pod_lifecycle_predicate_matches_policy_selector_without_annotation():
+    reconcile.assert_called_once_with("training")
+    assert "pod-a" not in handlers._POD_ASSIGNMENT_DIGESTS
+
+
+def test_timer_converges_registry_after_silent_event_failure():
+    api = RegistryApi()
+    pod = SimpleNamespace(
+        metadata=SimpleNamespace(
+            uid="pod-a",
+            labels={"job": "a"},
+            annotations={handlers.GPU_INDICES_ANNOTATION: "0"},
+        ),
+        spec=SimpleNamespace(node_name="node-a"),
+    )
+    api.pods = [pod]
+    original_list = api.list_namespaced_pod
+    calls = 0
+
+    def fail_once(namespace, label_selector=None):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("connection reset")
+        return original_list(namespace, label_selector)
+
+    api.list_namespaced_pod = fail_once
+    policy_spec = {
+        "matchLabels": {"job": "a"},
+        "priorityClass": "high",
+        "gpuBoostPct": 20.0,
+    }
+    policy_meta = {"uid": "policy-a", "generation": 1}
     custom_api = SimpleNamespace(
         list_namespaced_custom_object=lambda *_args, **_kwargs: {
-            "items": [{"spec": {"matchLabels": {"job": "a"}}}]
+            "items": [
+                {
+                    "metadata": {"name": "policy-a", **policy_meta},
+                    "spec": policy_spec,
+                }
+            ]
         }
     )
+    body = {
+        "metadata": {
+            "uid": "pod-a",
+            "annotations": {handlers.GPU_INDICES_ANNOTATION: "0"},
+            "labels": {"job": "a"},
+        },
+        "spec": {"nodeName": "node-a"},
+    }
+
+    with (
+        patch.object(handlers.kubernetes.client, "CoreV1Api", return_value=api),
+        patch.object(
+            handlers.kubernetes.client,
+            "CustomObjectsApi",
+            return_value=custom_api,
+        ),
+    ):
+        with pytest.raises(handlers.kopf.TemporaryError):
+            handlers.on_pod_event(
+                event={"type": "ADDED", "object": body},
+                namespace="training",
+            )
+
+        status_patch = SimpleNamespace(status={})
+        handlers.resync_jobpowerpolicy(
+            policy_spec,
+            "policy-a",
+            "training",
+            status_patch,
+            meta=policy_meta,
+        )
+
+    payload = json.loads(api.config_map.data[handlers.RESOLVED_ASSIGNMENTS_KEY])
+    assert len(payload["assignments"]) == 1
+    assert payload["assignments"][0]["podUid"] == "pod-a"
+    assert status_patch.status == {"matchedPods": 1, "activeBoosts": 1}
+
+
+def test_stable_registry_entry_does_not_replace_configmap():
+    api = RegistryApi()
+    entry = {"assignments": [_assignment("policy-a", "pod-a", 0, "high")]}
+
+    with patch.object(handlers.kubernetes.client, "CoreV1Api", return_value=api):
+        handlers._write_boost_registry("training", "policy-a", entry)
+        first_replace_count = api.replace_calls
+        handlers._write_boost_registry("training", "policy-a", entry)
+
+    assert first_replace_count == 1
+    assert api.replace_calls == first_replace_count
+
+
+def test_stable_timer_status_does_not_patch_or_replace():
+    patch_status = SimpleNamespace(status={})
+
+    with (
+        patch.object(handlers, "_reconcile_jobpowerpolicy", return_value=(1, 1)),
+        patch.object(handlers, "_prune_pod_assignment_digests"),
+    ):
+        handlers.resync_jobpowerpolicy(
+            {"matchLabels": {"job": "a"}},
+            "policy-a",
+            "training",
+            patch_status,
+            status={"matchedPods": 1, "activeBoosts": 1},
+        )
+
+    assert patch_status.status == {}
+
+
+def test_timer_prunes_missed_deleted_pod_digest():
+    api = RegistryApi()
+    api.pods = [
+        SimpleNamespace(
+            metadata=SimpleNamespace(uid="pod-live"),
+            spec=SimpleNamespace(node_name="node-a"),
+        )
+    ]
+    digest = (None, (("job", "a"),), "node-a")
+    handlers._POD_ASSIGNMENT_DIGESTS.update(
+        {
+            "pod-live": (digest, True, "training"),
+            "pod-stale": (digest, True, "training"),
+            "pod-other": (digest, True, "other"),
+        }
+    )
+
+    with (
+        patch.object(handlers.kubernetes.client, "CoreV1Api", return_value=api),
+        patch.object(handlers, "_reconcile_jobpowerpolicy", return_value=(0, 0)),
+    ):
+        handlers.resync_jobpowerpolicy(
+            {"matchLabels": {"job": "a"}},
+            "policy-a",
+            "training",
+            SimpleNamespace(status={}),
+            status={"matchedPods": 0, "activeBoosts": 0},
+        )
+
+    assert set(handlers._POD_ASSIGNMENT_DIGESTS) == {"pod-live", "pod-other"}
+
+
+def test_digest_cache_allows_concurrent_pod_events_and_timer_prunes():
+    api = RegistryApi()
+
+    def emit(index):
+        handlers.on_pod_event(
+            event={
+                "type": "ADDED",
+                "object": {
+                    "metadata": {
+                        "uid": f"pod-{index}",
+                        "annotations": {handlers.GPU_INDICES_ANNOTATION: "0"},
+                        "labels": {"job": "a"},
+                    },
+                    "spec": {"nodeName": "node-a"},
+                },
+            },
+            namespace="training",
+        )
+
+    with (
+        patch.object(handlers.kubernetes.client, "CoreV1Api", return_value=api),
+        patch.object(handlers, "_reconcile_jobpowerpolicies_for_namespace"),
+        ThreadPoolExecutor(max_workers=8) as executor,
+    ):
+        futures = [executor.submit(emit, index) for index in range(100)]
+        futures.extend(
+            executor.submit(handlers._prune_pod_assignment_digests, "training")
+            for _ in range(25)
+        )
+        for future in futures:
+            future.result()
+
+
+def test_policy_selector_cache_reuses_and_invalidates_namespace_list():
+    custom_api = SimpleNamespace(calls=0)
+
+    def list_policies(*_args, **_kwargs):
+        custom_api.calls += 1
+        return {"items": [{"spec": {"matchLabels": {"job": "a"}}}]}
+
+    custom_api.list_namespaced_custom_object = list_policies
     body = {
         "metadata": {"annotations": {}, "labels": {"job": "a"}},
         "spec": {"nodeName": "node-a"},
@@ -241,7 +513,32 @@ def test_pod_lifecycle_predicate_matches_policy_selector_without_annotation():
         "CustomObjectsApi",
         return_value=custom_api,
     ):
-        assert handlers._pod_lifecycle_relevant(body=body, namespace="training")
+        assert handlers._pod_matches_assignment_policy(body, "training")
+        assert handlers._pod_matches_assignment_policy(body, "training")
+        assert custom_api.calls == 1
+        handlers._invalidate_policy_selector_cache("training")
+        assert handlers._pod_matches_assignment_policy(body, "training")
+
+    assert custom_api.calls == 2
+
+
+def test_policy_handlers_invalidate_selector_cache():
+    handlers._POLICY_SELECTOR_CACHE["training"] = (float("inf"), ((("job", "a"),),))
+    patch_status = SimpleNamespace(status={})
+
+    with patch.object(handlers, "_reconcile_jobpowerpolicy", return_value=(0, 0)):
+        handlers.on_jobpowerpolicy_change(
+            {"matchLabels": {"job": "a"}},
+            "policy-a",
+            "training",
+            patch_status,
+        )
+
+    assert "training" not in handlers._POLICY_SELECTOR_CACHE
+    handlers._POLICY_SELECTOR_CACHE["training"] = (float("inf"), ((("job", "a"),),))
+    with patch.object(handlers, "_write_boost_registry"):
+        handlers.on_jobpowerpolicy_delete("policy-a", "training")
+    assert "training" not in handlers._POLICY_SELECTOR_CACHE
 
 
 def test_transient_pod_list_error_never_publishes_empty_assignments():

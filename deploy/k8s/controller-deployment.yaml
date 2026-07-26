@@ -1,0 +1,94 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: opendps-controller
+  namespace: opendps
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: opendps-controller-priority-config
+  namespace: opendps
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["opendps-job-boosts"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: opendps-controller-priority-config
+  namespace: opendps
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: opendps-controller-priority-config
+subjects:
+  - kind: ServiceAccount
+    name: opendps-controller
+    namespace: opendps
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opendps-controller-demo
+  namespace: opendps
+  labels:
+    app: opendps-controller
+    app.kubernetes.io/name: opendps-controller
+    app.kubernetes.io/component: controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: opendps-controller
+      app.kubernetes.io/name: opendps-controller
+      app.kubernetes.io/component: controller
+  template:
+    metadata:
+      labels:
+        app: opendps-controller
+        app.kubernetes.io/name: opendps-controller
+        app.kubernetes.io/component: controller
+    spec:
+      serviceAccountName: opendps-controller
+      containers:
+        - name: controller
+          image: opendps-controller:latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+            runAsGroup: 65532
+            runAsNonRoot: true
+            runAsUser: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          command: ["python", "-m", "opendps.controller.standalone"]
+          args:
+            - --config
+            - /app/topology-demo.json
+            - --brain
+            - priority-prs
+            - --sim
+          env:
+            - name: OPENDPS_PRIORITY_CONFIG_ENABLED
+              value: "true"
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: OPENDPS_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
