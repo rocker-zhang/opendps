@@ -99,8 +99,12 @@ def test_powerpolicy_valid_brain(brain):
     patch_obj = MagicMock()
     patch_obj.status = {}
 
-    # _annotate_domain_configmap will hit k8s; stub it out
-    with patch("opendps.operator.handlers._annotate_domain_configmap"):
+    # Both writes hit the Kubernetes API; this unit test only verifies the
+    # accepted brain choices and status update.
+    with (
+        patch("opendps.operator.handlers._write_domain_params", return_value=True),
+        patch("opendps.operator.handlers._annotate_domain_configmap"),
+    ):
         on_powerpolicy_change(
             spec={"domainRef": "d0", "brain": brain, "intervalSeconds": 5.0},
             name="pp-test",
