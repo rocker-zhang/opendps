@@ -1,4 +1,5 @@
 import json
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -84,6 +85,51 @@ def test_update_replaces_dynamic_snapshot_without_retaining_removed_gpus():
 
     assert source.poll() == {0: "normal", 9: "low"}
     assert source.poll() == {3: "critical", 9: "low"}
+
+
+def test_incluster_initialization_failure_is_retried(monkeypatch):
+    api = FakeConfigMapApi(_config_map([_assignment(gpu=2, tier="high")], "7"))
+
+    class FakeConfig:
+        calls = 0
+
+        @classmethod
+        def load_incluster_config(cls):
+            cls.calls += 1
+            if cls.calls == 1:
+                raise RuntimeError("service account not ready")
+
+    fake_kubernetes = SimpleNamespace(
+        client=SimpleNamespace(CoreV1Api=lambda: api),
+        config=FakeConfig,
+    )
+    monkeypatch.setitem(sys.modules, "kubernetes", fake_kubernetes)
+    source = PriorityConfigSource(namespace="default", node_name="node-a", baseline={0: "low"})
+
+    assert source.poll() == {0: "low"}
+    assert source.poll() == {0: "low", 2: "high"}
+    assert FakeConfig.calls == 2
+
+
+def test_successful_new_resource_version_logs_stable_applied_marker(caplog):
+    api = FakeConfigMapApi(
+        _config_map(
+            [
+                _assignment(gpu=2, tier="normal"),
+                _assignment(gpu=0, tier="high"),
+            ],
+            "42",
+        ),
+    )
+    source = PriorityConfigSource(namespace="default", node_name="node-a", api=api)
+
+    with caplog.at_level("INFO"):
+        source.poll()
+
+    assert (
+        "Priority configuration applied: resourceVersion=42 "
+        "node=node-a tiers=0=high,2=normal"
+    ) in caplog.text
 
 
 def test_missing_assignment_key_keeps_last_known_good_snapshot():

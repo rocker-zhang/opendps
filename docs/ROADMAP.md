@@ -406,3 +406,25 @@ The N12/N15 path now carries `JobPowerPolicy` priority into the controller:
 The explicit annotation is suitable for the current demo path. Automatic
 device-plugin or Dynamic Resource Allocation identity mapping remains a future
 integration.
+
+## N22 — Live Kubernetes priority handoff
+
+Status: implemented and validated on a non-GB10 x86 kind cluster; the live
+suite passed and received two independent reviewer sign-offs.
+
+N22 adds the deployable controller side of the N21 handoff:
+
+- a simulator-backed Kubernetes controller Deployment with dynamic-only
+  `priority-prs` configuration;
+- Downward API injection of the controller namespace and node name;
+- a dedicated ServiceAccount whose namespaced Role can only get the priority
+  registry ConfigMap;
+- retryable in-cluster client initialization and an observable snapshot marker;
+- a real-API integration test covering late annotation, priority update,
+  controller continuity, deletion cleanup, and least-privilege access.
+
+The acceptance path is software-only and does not require or exercise a GPU.
+The validation covers the Kubernetes API handoff and simulator-backed
+controller reload. It does not cover live GPU telemetry, automatic device
+allocation discovery, or physical power control. Design, runbook, and evidence
+boundary: `docs/N22-live-kubernetes-handoff.md`.

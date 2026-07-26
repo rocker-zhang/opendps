@@ -55,7 +55,8 @@ rules:
   - apiGroups: ["events.k8s.io"]
     resources: ["events"]
     verbs: ["create", "patch"]
-  # JobPowerPolicy reconciliation lists pods to count matches (N6).
+  # JobPowerPolicy reconciliation lists Pods; a silent Kopf event handler
+  # consumes lifecycle watch events without mutating the watched Pods.
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch"]

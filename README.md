@@ -66,22 +66,40 @@ cargo build --release -p opendps-agent
 ### Kubernetes operator (kind / k3s)
 
 ```bash
-# Build + side-load the operator image, install CRDs, deploy, and reconcile a demo domain.
+# Build the operator and software-only controller images.
 docker build -f deploy/operator.Dockerfile -t opendps-operator:latest .
-kind load docker-image opendps-operator:latest
-# k3s alternative: docker save opendps-operator:latest | sudo k3s ctr images import -
+docker build -f deploy/controller.Dockerfile -t opendps-controller:latest .
 
-kubectl create namespace opendps
+# kind:
+kind load docker-image opendps-operator:latest opendps-controller:latest
+
+# k3s alternative:
+docker save opendps-operator:latest opendps-controller:latest \
+  | sudo k3s ctr images import -
+
+kubectl create namespace opendps --dry-run=client -o yaml | kubectl apply -f -
 kubectl apply -f deploy/k8s/crds/
 kubectl apply -f deploy/k8s/operator-deployment.yaml
+kubectl apply -f deploy/k8s/controller-deployment.yaml
 kubectl apply -f deploy/k8s/examples/          # PowerDomain + PowerPolicy + JobPowerPolicy
 
 kubectl get powerdomain demo -n opendps -o jsonpath='{.status.phase}'   # -> Active
+
+# Optional real-API acceptance test (software simulator; no GPU caps):
+OPENDPS_K8S_TEST=1 .venv/bin/pytest tests/test_operator_k8s_integration.py -v
 ```
 
-> **Note:** the operator writes PowerPolicy brain/failsafe params into the domain
-> ConfigMap (`params.json`); the controller reads them at **(re)start**, so a
+> The operator writes PowerPolicy brain/failsafe params into the domain
+> ConfigMap (`params.json`); the controller reads them at (re)start, so a
 > PowerPolicy edit takes effect on the next controller restart, not mid-run.
+> JobPowerPolicy priority assignments use a separate ConfigMap path and are
+> applied between controller ticks without a restart. See
+> [N22 live Kubernetes handoff](docs/N22-live-kubernetes-handoff.md).
+
+The N22 live suite passed on a non-GB10 x86 kind cluster and received two
+independent reviewer sign-offs. This validates the Kubernetes API handoff with
+the software simulator, not live GPU telemetry, automatic device allocation
+discovery, or physical power control.
 
 ## Components
 

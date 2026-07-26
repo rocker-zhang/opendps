@@ -40,6 +40,8 @@ if "kopf" not in sys.modules:
             update=_identity_handler,
             delete=_identity_handler,
             resume=_identity_handler,
+            event=_identity_handler,
+            timer=_identity_handler,
         )
         sys.modules["kopf"] = kopf_stub
 
