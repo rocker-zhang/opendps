@@ -67,9 +67,12 @@ def _priority_config():
     if not raw:
         return None
     config_map = json.loads(raw)
-    assignments = json.loads(
-        config_map["data"]["resolved-assignments.json"]
-    )["assignments"]
+    payload = (config_map.get("data") or {}).get("resolved-assignments.json")
+    if payload is None:
+        return None
+    assignments = json.loads(payload).get("assignments")
+    if assignments is None:
+        return None
     return config_map["metadata"]["resourceVersion"], assignments
 
 
@@ -245,7 +248,8 @@ def test_n22_job_policy_hot_reloads_controller_without_restart():
         assert _wait_for(_controller_loaded_critical), (
             "controller did not report applying the critical tier"
         )
-        current = _controller_pod()
+        current = _wait_for(_controller_pod, timeout=30)
+        assert current, "opendps-controller Pod disappeared during the test"
         assert current["metadata"]["uid"] == controller_uid
         assert current["status"]["containerStatuses"][0]["restartCount"] == initial_restarts
 

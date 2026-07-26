@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import random
+import threading
 import time
 from typing import Any
 
@@ -21,13 +22,23 @@ BOOST_CONFIG_MAP_NAME = os.getenv("OPENDPS_BOOST_CONFIGMAP", "opendps-job-boosts
 GPU_INDICES_ANNOTATION = "opendps.io/gpu-indices"
 BOOST_SCHEMA_VERSION = 1
 RESOLVED_ASSIGNMENTS_KEY = "resolved-assignments.json"
+POLICY_SELECTOR_CACHE_TTL_S = 5.0
 # Raw Pod event handlers are silent in Kopf: unlike create/update/delete
 # handlers, they do not write progress or finalizers back to watched Pods.
 # Cache only assignment-relevant fields so status-only MODIFIED events do not
 # repeatedly re-resolve every JobPowerPolicy.
 _POD_ASSIGNMENT_DIGESTS: dict[
     str,
-    tuple[tuple[str | None, tuple[tuple[str, str], ...], str | None], bool],
+    tuple[
+        tuple[str | None, tuple[tuple[str, str], ...], str | None],
+        bool,
+        str,
+    ],
+] = {}
+_POD_ASSIGNMENT_DIGESTS_LOCK = threading.Lock()
+_POLICY_SELECTOR_CACHE: dict[
+    str,
+    tuple[float, tuple[tuple[tuple[str, str], ...], ...]],
 ] = {}
 
 
@@ -203,6 +214,7 @@ def on_powerpolicy_change(spec, name, namespace, patch, **kwargs):
 @kopf.on.create("opendps.io", "v1alpha1", "jobpowerpolicies")
 @kopf.on.update("opendps.io", "v1alpha1", "jobpowerpolicies")
 def on_jobpowerpolicy_change(spec, name, namespace, patch, meta=None, **kwargs):
+    _invalidate_policy_selector_cache(namespace)
     matched, active = _reconcile_jobpowerpolicy(
         spec,
         name,
@@ -214,7 +226,7 @@ def on_jobpowerpolicy_change(spec, name, namespace, patch, meta=None, **kwargs):
 
 
 @kopf.timer("opendps.io", "v1alpha1", "jobpowerpolicies", interval=30.0)
-def resync_jobpowerpolicy(spec, name, namespace, patch, meta=None, **kwargs):
+def resync_jobpowerpolicy(spec, name, namespace, patch, status=None, meta=None, **kwargs):
     """Periodically compensate for failures in the silent Pod event path."""
     matched, active = _reconcile_jobpowerpolicy(
         spec,
@@ -222,8 +234,12 @@ def resync_jobpowerpolicy(spec, name, namespace, patch, meta=None, **kwargs):
         namespace,
         meta=meta,
     )
-    patch.status["matchedPods"] = matched
-    patch.status["activeBoosts"] = active
+    _prune_pod_assignment_digests(namespace)
+    current_status = status or {}
+    if current_status.get("matchedPods") != matched:
+        patch.status["matchedPods"] = matched
+    if current_status.get("activeBoosts") != active:
+        patch.status["activeBoosts"] = active
 
 
 def _reconcile_jobpowerpolicy(
@@ -286,6 +302,7 @@ def _reconcile_jobpowerpolicy(
 @kopf.on.delete("opendps.io", "v1alpha1", "jobpowerpolicies")
 def on_jobpowerpolicy_delete(name, namespace, **kwargs):
     """Remove the deleted policy without disturbing sibling registry entries."""
+    _invalidate_policy_selector_cache(namespace)
     _write_boost_registry(namespace, name, None)
 
 
@@ -310,6 +327,21 @@ def _pod_matches_assignment_policy(body: dict[str, Any], namespace: str) -> bool
     labels = dict(label_items)
     if not labels:
         return False
+    for selector_items in _policy_selectors(namespace):
+        if all(labels.get(key) == value for key, value in selector_items):
+            return True
+    return False
+
+
+def _invalidate_policy_selector_cache(namespace: str) -> None:
+    _POLICY_SELECTOR_CACHE.pop(namespace, None)
+
+
+def _policy_selectors(namespace: str) -> tuple[tuple[tuple[str, str], ...], ...]:
+    now = time.monotonic()
+    cached = _POLICY_SELECTOR_CACHE.get(namespace)
+    if cached is not None and cached[0] > now:
+        return cached[1]
     custom = kubernetes.client.CustomObjectsApi()
     policies = custom.list_namespaced_custom_object(
         "opendps.io",
@@ -317,11 +349,39 @@ def _pod_matches_assignment_policy(body: dict[str, Any], namespace: str) -> bool
         namespace,
         "jobpowerpolicies",
     )
-    for policy in policies.get("items", []):
-        selector = policy.get("spec", {}).get("matchLabels", {})
-        if selector and all(labels.get(key) == value for key, value in selector.items()):
-            return True
-    return False
+    selectors = tuple(
+        tuple(sorted((str(key), str(value)) for key, value in selector.items()))
+        for policy in policies.get("items", [])
+        if (selector := policy.get("spec", {}).get("matchLabels", {}))
+    )
+    _POLICY_SELECTOR_CACHE[namespace] = (
+        now + POLICY_SELECTOR_CACHE_TTL_S,
+        selectors,
+    )
+    return selectors
+
+
+def _prune_pod_assignment_digests(namespace: str) -> None:
+    """Remove cached UIDs that disappeared while the Pod watch was disrupted."""
+    v1 = kubernetes.client.CoreV1Api()
+    pods = v1.list_namespaced_pod(namespace)
+    live_uids = {
+        str(uid)
+        for pod in pods.items
+        if (uid := getattr(getattr(pod, "metadata", None), "uid", None))
+    }
+    with _POD_ASSIGNMENT_DIGESTS_LOCK:
+        stale = [
+            pod_uid
+            for pod_uid, (
+                _digest,
+                _relevant,
+                cached_namespace,
+            ) in _POD_ASSIGNMENT_DIGESTS.items()
+            if cached_namespace == namespace and pod_uid not in live_uids
+        ]
+        for pod_uid in stale:
+            _POD_ASSIGNMENT_DIGESTS.pop(pod_uid, None)
 
 
 def _reconcile_jobpowerpolicies_for_namespace(namespace: str) -> None:
@@ -361,7 +421,8 @@ def on_pod_event(event, namespace, **kwargs):
     if not pod_uid or not namespace:
         return
     pod_uid = str(pod_uid)
-    previous = _POD_ASSIGNMENT_DIGESTS.get(pod_uid)
+    with _POD_ASSIGNMENT_DIGESTS_LOCK:
+        previous = _POD_ASSIGNMENT_DIGESTS.get(pod_uid)
 
     if event_type == "DELETED":
         try:
@@ -370,7 +431,8 @@ def on_pod_event(event, namespace, **kwargs):
             if relevant:
                 _reconcile_jobpowerpolicies_for_namespace(namespace)
         finally:
-            _POD_ASSIGNMENT_DIGESTS.pop(pod_uid, None)
+            with _POD_ASSIGNMENT_DIGESTS_LOCK:
+                _POD_ASSIGNMENT_DIGESTS.pop(pod_uid, None)
         return
 
     digest = _pod_assignment_digest(body)
@@ -379,7 +441,8 @@ def on_pod_event(event, namespace, **kwargs):
     relevant = _pod_matches_assignment_policy(body, namespace)
     if relevant or (previous is not None and previous[1]):
         _reconcile_jobpowerpolicies_for_namespace(namespace)
-    _POD_ASSIGNMENT_DIGESTS[pod_uid] = (digest, relevant)
+    with _POD_ASSIGNMENT_DIGESTS_LOCK:
+        _POD_ASSIGNMENT_DIGESTS[pod_uid] = (digest, relevant, namespace)
 
 
 # ---------------------------------------------------------------------------
@@ -546,12 +609,15 @@ def _write_boost_registry(namespace: str, policy_name: str, entry: dict | None) 
                     ) from create_exc
                 raise
 
-        data = dict(current.data or {})
+        original_data = dict(current.data or {})
+        data = dict(original_data)
         if entry is None:
             data.pop(policy_key, None)
         else:
             data[policy_key] = json.dumps(entry, indent=2, sort_keys=True, separators=(",", ": "))
         data[RESOLVED_ASSIGNMENTS_KEY] = _aggregate_resolved_assignments(data)
+        if data == original_data:
+            return
         body = kubernetes.client.V1ConfigMap(
             metadata=kubernetes.client.V1ObjectMeta(
                 name=BOOST_CONFIG_MAP_NAME,

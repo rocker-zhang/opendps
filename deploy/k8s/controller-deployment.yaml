@@ -27,6 +27,7 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: opendps-controller
+    namespace: opendps
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -56,6 +57,23 @@ spec:
         - name: controller
           image: opendps-controller:latest
           imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+            runAsGroup: 65532
+            runAsNonRoot: true
+            runAsUser: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
           command: ["python", "-m", "opendps.controller.standalone"]
           args:
             - --config

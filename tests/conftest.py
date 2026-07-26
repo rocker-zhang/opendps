@@ -35,6 +35,7 @@ if "kopf" not in sys.modules:
 
         kopf_stub.PermanentError = PermanentError
         kopf_stub.TemporaryError = TemporaryError
+        kopf_stub.timer = _identity_handler
         kopf_stub.on = SimpleNamespace(
             create=_identity_handler,
             update=_identity_handler,
