@@ -65,9 +65,9 @@ assertion (busy > no-job) holds at any tick count.
   `OPENDPS_PRIORITY_CONFIG_ENABLED=true` and the local node identity in
   `OPENDPS_NODE_NAME`. Without that explicit configuration, the controller
   performs no ConfigMap reads and continues to use its CLI baseline.
-- **`priorityClass` tiers** (low/normal/high/critical) are captured in the CRD
-  but not yet mapped to distinct boost fractions — every busy GPU gets the same
-  boost.
+- N12's single busy-GPU boost path applies one boost fraction to every busy GPU.
+  N15 adds distinct low/normal/high/critical tier weights for priority-aware
+  allocation.
 - Boost is GPU-level (busy/idle), not per-job; multiple jobs on one GPU share
   the single boost.
 

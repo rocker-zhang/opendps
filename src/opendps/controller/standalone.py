@@ -45,7 +45,10 @@ from opendps.brain.prs import PRSBrain
 import os
 
 from opendps.controller.cluster_coordinator import NodeStateStore
-from opendps.controller.priority_config import PriorityConfigSource
+from opendps.controller.priority_config import (
+    PriorityConfigSource,
+    dynamic_priority_config_from_env,
+)
 from opendps.pdn.model import PDNTopology, from_dict
 from opendps.pdn.quota import QuotaConfig
 from opendps.sim.protocol import Actuator
@@ -398,8 +401,13 @@ class StandaloneController:
         while True:
             try:
                 priority_source = getattr(self._config, "priority_config_source", None)
-                if priority_source is not None and hasattr(self._brain, "_tiers"):
-                    self._brain._tiers = dict(priority_source.poll())
+                if priority_source is not None:
+                    set_tiers = getattr(self._brain, "set_tiers", None)
+                    if not callable(set_tiers):
+                        raise TypeError(
+                            "configured priority source requires a brain with set_tiers()"
+                        )
+                    set_tiers(priority_source.poll())
                 self.run_once()
             except Exception as exc:  # noqa: BLE001
                 log.error("tick error: %s", exc)
@@ -579,10 +587,6 @@ def main(argv: list[str] | None = None) -> int:
                 "or place quota.json next to --config"
             )
 
-    from opendps.controller.priority_config import (
-        dynamic_priority_config_from_env,
-    )
-
     priority_config_enabled = False
     priority_config_node = None
     if args.brain == "priority-prs":
@@ -678,18 +682,18 @@ def main(argv: list[str] | None = None) -> int:
         thermal_throttled_gpus=hot_gpus,
         thermal_throttle_temp_c=args.thermal_throttle_temp_c,
     )
-    if not priority_config_enabled:
-        StandaloneController(cfg).run()
-        return 0
-
-    cfg.priority_config_source = PriorityConfigSource(
-        namespace=os.environ.get("POD_NAMESPACE", "default"),
-        node_name=priority_config_node,
-        baseline=cfg.gpu_priority_tiers,
-    )
-    # Load an existing assignment before the first decision; subsequent
-    # iterations refresh only when the ConfigMap resourceVersion changes.
-    cfg.priority_config_source.poll()
+    if priority_config_enabled:
+        namespace = os.environ.get("POD_NAMESPACE", "").strip()
+        if not namespace:
+            parser.error("POD_NAMESPACE is required when dynamic priority config is enabled")
+        cfg.priority_config_source = PriorityConfigSource(
+            namespace=namespace,
+            node_name=priority_config_node,
+            baseline=cfg.gpu_priority_tiers,
+        )
+        # Load an existing assignment before the first decision; subsequent
+        # iterations refresh only when the ConfigMap resourceVersion changes.
+        cfg.priority_config_source.poll()
     StandaloneController(cfg).run()
     return 0
 

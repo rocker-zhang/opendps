@@ -18,8 +18,8 @@ class FakeConfigMapApi:
         self.responses = list(responses)
         self.calls = []
 
-    def read_namespaced_config_map(self, name, namespace):
-        self.calls.append((name, namespace))
+    def read_namespaced_config_map(self, name, namespace, _request_timeout):
+        self.calls.append((name, namespace, _request_timeout))
         response = self.responses.pop(0)
         if isinstance(response, Exception):
             raise response
@@ -70,7 +70,7 @@ def test_startup_load_filters_assignments_to_local_node():
     assert source.snapshot() == {7: "low"}
     assert source.poll() == {2: "high", 7: "low"}
     assert source.snapshot() == {2: "high", 7: "low"}
-    assert api.calls == [("opendps-job-boosts", "power-system")]
+    assert api.calls == [("opendps-job-boosts", "power-system", 5.0)]
 
 
 def test_update_replaces_dynamic_snapshot_without_retaining_removed_gpus():
@@ -147,6 +147,28 @@ def test_malformed_update_keeps_last_known_good_snapshot():
     assert source.snapshot() == {1: "high"}
 
 
+def test_persistent_failure_warns_once_and_success_resets_warning(caplog):
+    malformed = SimpleNamespace(
+        metadata=SimpleNamespace(resource_version="2"),
+        data={ASSIGNMENTS_KEY: "{not-json"},
+    )
+    api = FakeConfigMapApi(
+        malformed,
+        malformed,
+        _config_map([_assignment(gpu=1, tier="high")], "3"),
+        malformed,
+    )
+    source = PriorityConfigSource(namespace="default", node_name="node-a", api=api)
+
+    with caplog.at_level("WARNING"):
+        source.poll()
+        source.poll()
+        source.poll()
+        source.poll()
+
+    assert sum("Ignoring malformed" in record.message for record in caplog.records) == 2
+
+
 def test_forbidden_update_keeps_last_known_good_snapshot():
     api = FakeConfigMapApi(
         _config_map([_assignment(gpu=1, tier="high")], "1"),
@@ -158,6 +180,20 @@ def test_forbidden_update_keeps_last_known_good_snapshot():
 
     assert source.poll() == {1: "high"}
     assert source.poll() == {1: "high"}
+
+
+def test_poll_passes_configured_kubernetes_request_timeout():
+    api = FakeConfigMapApi(_config_map([]))
+    source = PriorityConfigSource(
+        namespace="default",
+        node_name="node-a",
+        api=api,
+        request_timeout_s=2.5,
+    )
+
+    source.poll()
+
+    assert api.calls == [("opendps-job-boosts", "default", 2.5)]
 
 
 def test_conflicting_assignments_choose_highest_tier_deterministically():
@@ -200,11 +236,19 @@ def test_standalone_run_applies_dynamic_tiers_before_next_tick(monkeypatch):
         dry_run=False,
         sim_mode=True,
     )
-    controller._brain = SimpleNamespace(_tiers={0: "low"})
+
+    class Brain:
+        def __init__(self):
+            self.tiers = {0: "low"}
+
+        def set_tiers(self, tiers):
+            self.tiers = dict(tiers)
+
+    controller._brain = Brain()
     controller._managed_domains = []
 
     def verify_tick():
-        assert controller._brain._tiers == {
+        assert controller._brain.tiers == {
             0: "critical",
             1: "normal",
         }
@@ -218,6 +262,27 @@ def test_standalone_run_applies_dynamic_tiers_before_next_tick(monkeypatch):
     with pytest.raises(KeyboardInterrupt):
         controller.run()
     assert source.poll_count == 1
+
+
+def test_standalone_run_reports_incompatible_dynamic_brain(monkeypatch, caplog):
+    controller = object.__new__(StandaloneController)
+    controller._config = SimpleNamespace(
+        priority_config_source=SimpleNamespace(poll=lambda: {0: "high"}),
+        interval_s=0,
+        dry_run=False,
+        sim_mode=True,
+    )
+    controller._brain = SimpleNamespace()
+    controller._managed_domains = []
+    monkeypatch.setattr(
+        "opendps.controller.standalone.time.sleep",
+        lambda _interval: (_ for _ in ()).throw(KeyboardInterrupt),
+    )
+
+    with pytest.raises(KeyboardInterrupt), caplog.at_level("ERROR"):
+        controller.run()
+
+    assert "requires a brain with set_tiers()" in caplog.text
 
 
 def test_priority_controller_allows_empty_cli_baseline_with_dynamic_source():

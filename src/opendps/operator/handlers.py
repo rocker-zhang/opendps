@@ -4,8 +4,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import time
-from types import SimpleNamespace
 from typing import Any
 
 import kopf
@@ -195,6 +195,24 @@ def on_powerpolicy_change(spec, name, namespace, patch, **kwargs):
 @kopf.on.create("opendps.io", "v1alpha1", "jobpowerpolicies")
 @kopf.on.update("opendps.io", "v1alpha1", "jobpowerpolicies")
 def on_jobpowerpolicy_change(spec, name, namespace, patch, meta=None, **kwargs):
+    matched, active = _reconcile_jobpowerpolicy(
+        spec,
+        name,
+        namespace,
+        meta=meta,
+    )
+    patch.status["matchedPods"] = matched
+    patch.status["activeBoosts"] = active
+
+
+def _reconcile_jobpowerpolicy(
+    spec: dict[str, Any],
+    name: str,
+    namespace: str,
+    *,
+    meta: dict[str, Any] | None = None,
+) -> tuple[int, int]:
+    """Resolve one policy, publish its assignments, and return status counts."""
     meta = meta or {}
     match_labels = spec.get("matchLabels", {})
     boost_pct = float(spec.get("gpuBoostPct", 15.0))
@@ -231,8 +249,6 @@ def on_jobpowerpolicy_change(spec, name, namespace, patch, meta=None, **kwargs):
     )
 
     active = matched if boost_pct > 0.0 else 0
-    patch.status["matchedPods"] = matched
-    patch.status["activeBoosts"] = active
     log.info(
         "JobPowerPolicy %s/%s: labels=%s boost=%.0f%% priority=%s matchedPods=%d activeBoosts=%d",
         namespace,
@@ -243,6 +259,7 @@ def on_jobpowerpolicy_change(spec, name, namespace, patch, meta=None, **kwargs):
         matched,
         active,
     )
+    return matched, active
 
 
 @kopf.on.delete("opendps.io", "v1alpha1", "jobpowerpolicies")
@@ -251,12 +268,63 @@ def on_jobpowerpolicy_delete(name, namespace, **kwargs):
     _write_boost_registry(namespace, name, None)
 
 
-@kopf.on.create("", "v1", "pods")
-@kopf.on.update("", "v1", "pods")
-@kopf.on.delete("", "v1", "pods")
-@kopf.on.resume("", "v1", "pods")
+def _pod_lifecycle_relevant(
+    body=None,
+    old=None,
+    new=None,
+    namespace: str | None = None,
+    **kwargs,
+) -> bool:
+    """Return whether a Pod event can change a published policy assignment."""
+
+    def assignment_fields(value: Any) -> tuple[Any, Any, Any]:
+        value = value if isinstance(value, dict) else {}
+        metadata = value.get("metadata") or {}
+        annotations = metadata.get("annotations") or {}
+        labels = metadata.get("labels") or {}
+        spec = value.get("spec") or {}
+        return annotations.get(GPU_INDICES_ANNOTATION), labels, spec.get("nodeName")
+
+    if isinstance(old, dict) and isinstance(new, dict):
+        if assignment_fields(old) == assignment_fields(new):
+            return False
+        candidates = (old, new)
+    else:
+        current = body if isinstance(body, dict) else new if isinstance(new, dict) else old
+        candidates = (current,)
+
+    fields = [assignment_fields(candidate) for candidate in candidates]
+    if any(annotation is not None for annotation, _labels, _node in fields):
+        return True
+    if not namespace:
+        return False
+
+    pod_labels = [labels for _annotation, labels, _node in fields if labels]
+    if not pod_labels:
+        return False
+    custom = kubernetes.client.CustomObjectsApi()
+    policies = custom.list_namespaced_custom_object(
+        "opendps.io",
+        "v1alpha1",
+        namespace,
+        "jobpowerpolicies",
+    )
+    for policy in policies.get("items", []):
+        selector = policy.get("spec", {}).get("matchLabels", {})
+        if selector and any(
+            all(labels.get(key) == value for key, value in selector.items())
+            for labels in pod_labels
+        ):
+            return True
+    return False
+
+
+@kopf.on.create("", "v1", "pods", when=_pod_lifecycle_relevant)
+@kopf.on.update("", "v1", "pods", when=_pod_lifecycle_relevant)
+@kopf.on.delete("", "v1", "pods", when=_pod_lifecycle_relevant)
+@kopf.on.resume("", "v1", "pods", when=_pod_lifecycle_relevant)
 def on_pod_lifecycle(namespace, **kwargs):
-    """Re-resolve every policy in the Pod namespace after lifecycle changes."""
+    """Re-resolve policies after a relevant Pod assignment change."""
     custom = kubernetes.client.CustomObjectsApi()
     policies = custom.list_namespaced_custom_object(
         "opendps.io",
@@ -272,11 +340,10 @@ def on_pod_lifecycle(namespace, **kwargs):
         name = metadata.get("name")
         if not name:
             continue
-        on_jobpowerpolicy_change(
+        _reconcile_jobpowerpolicy(
             policy.get("spec", {}),
             name,
             namespace,
-            SimpleNamespace(status={}),
             meta=metadata,
         )
 
@@ -341,10 +408,8 @@ def _list_matching_pods(namespace: str, match_labels: dict) -> list[Any]:
     """List pods in the namespace matching the given label selector.
 
     In-pod safe: only calls the k8s API (pods list), never nvidia-smi. Returns []
-    when no labels are given. Auth/permission failures (401/403) and other
-    non-transient API errors are re-raised so kopf surfaces and retries them
-    rather than silently reporting zero matches; only transient connection
-    blips degrade to 0.
+    when no labels are given. API and connection failures are propagated so a
+    transient outage can never be published as an empty assignment set.
     """
     if not match_labels:
         return []
@@ -356,11 +421,13 @@ def _list_matching_pods(namespace: str, match_labels: dict) -> list[Any]:
     except kubernetes.client.exceptions.ApiException as e:
         if e.status in (401, 403, 404, 422):  # auth/permission/bad-request: surface it
             raise
-        log.warning("pod list failed for selector %r: %s", selector, e)
-        return []
-    except Exception as e:  # transient connection error — degrade to 0
-        log.warning("pod list connection error for selector %r: %s", selector, e)
-        return []
+        raise kopf.TemporaryError(
+            f"pod list failed for selector {selector!r}: {e}", delay=15
+        ) from e
+    except Exception as e:
+        raise kopf.TemporaryError(
+            f"pod list connection error for selector {selector!r}: {e}", delay=15
+        ) from e
 
 
 def _count_matching_pods(namespace: str, match_labels: dict) -> int:
@@ -383,10 +450,15 @@ def _aggregate_resolved_assignments(data: dict[str, str]) -> str:
             assignments.extend(value for value in values if isinstance(value, dict))
     assignments.sort(
         key=lambda value: (
-            value.get("nodeName", ""),
-            value.get("gpuIndex", -1),
-            value.get("podUid", ""),
-            value.get("policyUid", ""),
+            str(value.get("nodeName", "")),
+            (
+                value.get("gpuIndex", -1)
+                if isinstance(value.get("gpuIndex"), int)
+                and not isinstance(value.get("gpuIndex"), bool)
+                else -1
+            ),
+            str(value.get("podUid", "")),
+            str(value.get("policyUid", "")),
         )
     )
     return json.dumps(
@@ -398,13 +470,12 @@ def _aggregate_resolved_assignments(data: dict[str, str]) -> str:
 
 
 def _write_boost_registry(namespace: str, policy_name: str, entry: dict | None) -> None:
-    """Publish one JobPowerPolicy's boost entry into the shared boost-registry
-    ConfigMap (merge-patch on the policy-named key; preserves sibling policies).
+    """Publish one policy entry with a resource-versioned full replacement.
 
-    This is the published, k8s-native record of the boost policy (and an audit
-    artifact). The process-mode controller derives live per-GPU boosts from its
-    JobTracker, not from this ConfigMap; a future in-cluster controller would
-    consume it directly.
+    Each attempt reads the shared ConfigMap, updates the policy-named key and
+    aggregate assignment payload, then replaces the complete object using its
+    ``resourceVersion``. A missing ConfigMap is created. Conflicts are retried
+    with jitter and exhausted retries are rescheduled by kopf.
     """
     v1 = kubernetes.client.CoreV1Api()
     policy_key = f"{policy_name}.json"
@@ -431,7 +502,14 @@ def _write_boost_registry(namespace: str, policy_name: str, entry: dict | None) 
                 return
             except kubernetes.client.exceptions.ApiException as create_exc:
                 if create_exc.status == 409 and attempt < 2:
+                    time.sleep(random.uniform(0.01, 0.05))
                     continue
+                if create_exc.status == 409:
+                    raise kopf.TemporaryError(
+                        f"boost registry {namespace}/{BOOST_CONFIG_MAP_NAME} "
+                        "remained conflicted after 3 attempts",
+                        delay=1,
+                    ) from create_exc
                 raise
 
         data = dict(current.data or {})
@@ -453,7 +531,14 @@ def _write_boost_registry(namespace: str, policy_name: str, entry: dict | None) 
             return
         except kubernetes.client.exceptions.ApiException as exc:
             if exc.status == 409 and attempt < 2:
+                time.sleep(random.uniform(0.01, 0.05))
                 continue
+            if exc.status == 409:
+                raise kopf.TemporaryError(
+                    f"boost registry {namespace}/{BOOST_CONFIG_MAP_NAME} "
+                    "remained conflicted after 3 attempts",
+                    delay=1,
+                ) from exc
             raise
 
 

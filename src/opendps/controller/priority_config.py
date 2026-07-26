@@ -54,6 +54,7 @@ class PriorityConfigSource:
         node_name: str,
         baseline: Mapping[int, str] | None = None,
         api: Any | None = None,
+        request_timeout_s: float = 5.0,
     ) -> None:
         self._namespace = namespace
         self._node_name = node_name
@@ -61,6 +62,7 @@ class PriorityConfigSource:
         self._snapshot: Mapping[int, str] = MappingProxyType(dict(self._baseline))
         self._resource_version: str | None = None
         self._api = api
+        self._request_timeout_s = request_timeout_s
         self._disabled = False
         self._reported_unavailable = False
 
@@ -78,6 +80,7 @@ class PriorityConfigSource:
             config_map = api.read_namespaced_config_map(
                 name=CONFIG_MAP_NAME,
                 namespace=self._namespace,
+                _request_timeout=self._request_timeout_s,
             )
         except Exception as exc:
             status = getattr(exc, "status", None)
@@ -86,13 +89,15 @@ class PriorityConfigSource:
                 self._snapshot = MappingProxyType(dict(self._baseline))
                 return self._snapshot
             if status in (401, 403):
-                log.warning(
-                    "Cannot read priority ConfigMap %s/%s (HTTP %s); "
-                    "keeping the last-known-good configuration",
-                    self._namespace,
-                    CONFIG_MAP_NAME,
-                    status,
-                )
+                if not self._reported_unavailable:
+                    log.warning(
+                        "Cannot read priority ConfigMap %s/%s (HTTP %s); "
+                        "keeping the last-known-good configuration",
+                        self._namespace,
+                        CONFIG_MAP_NAME,
+                        status,
+                    )
+                    self._reported_unavailable = True
             else:
                 log.debug("Priority ConfigMap refresh failed: %s", exc)
             return self._snapshot
@@ -100,6 +105,7 @@ class PriorityConfigSource:
         metadata = getattr(config_map, "metadata", None)
         resource_version = getattr(metadata, "resource_version", None)
         if resource_version and resource_version == self._resource_version:
+            self._reported_unavailable = False
             return self._snapshot
 
         data = getattr(config_map, "data", None) or {}
@@ -107,19 +113,22 @@ class PriorityConfigSource:
         try:
             dynamic = self._parse(raw)
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
-            log.warning(
-                "Ignoring malformed %s in ConfigMap %s/%s: %s",
-                ASSIGNMENTS_KEY,
-                self._namespace,
-                CONFIG_MAP_NAME,
-                exc,
-            )
+            if not self._reported_unavailable:
+                log.warning(
+                    "Ignoring malformed %s in ConfigMap %s/%s: %s",
+                    ASSIGNMENTS_KEY,
+                    self._namespace,
+                    CONFIG_MAP_NAME,
+                    exc,
+                )
+                self._reported_unavailable = True
             return self._snapshot
 
         merged = dict(self._baseline)
         merged.update(dynamic)
         self._snapshot = MappingProxyType(merged)
         self._resource_version = resource_version
+        self._reported_unavailable = False
         return self._snapshot
 
     def _get_api(self) -> Any | None:
